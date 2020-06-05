@@ -5,12 +5,12 @@ Mount/umounts disk images (E01, vmdk, vhd(x), vdi, raw, iso, hfs+, qcow2 and vss
 Automation script mounts disks images using existing disk mount tools; qemu-nbd, ewfmount, affuse  
 
 USAGE: ermount.sh [-h -s -u -b -rw] 
-	OPTIONS: 
-           -h this help text
-           -s ermount status
-           -u umount all disks mounted in /tmp and nbd
-           -b mount bitlocker encrypted volume
-           -rw mount image read write
+	OPTIONS:<br> 
+           -h this help text<br>
+           -s ermount status<br>
+           -u umount all disks mounted in /tmp and /dev/nbd<br>
+           -b mount bitlocker encrypted volume<br>
+           -rw mount image read write<br>
 
  
       Default mount point: /tmp/ermount
