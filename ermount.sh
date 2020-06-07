@@ -53,7 +53,6 @@ makered "Enter Path and Image or Device to Mount"
       [ $image_type == "ISO" ] && return 1
       multi=$image_name"002"
       # Set source image and destination mount point for E01 && umount /tmp/raw 2>/dev/null 
-      echo ""
       echo "Image type " $image_type
       file "$ipath" || exit
       echo ""
@@ -84,6 +83,7 @@ function mount_point(){
 
 # Runs mmls as needed to find any partition offsets
 function set_image_offset(){
+      [ 'which mmls' == "" ] && makered "sleuthkit not installed!!!" 
       [ "${block_device}" != "" ] &&  return 1
       makered "Run MMLS if Needed to Choose Partition Offset"
       mmls "${image_src}" 2>/dev/null && \
@@ -94,7 +94,6 @@ function set_image_offset(){
       offset="offset=$partition_offset" || \
       echo "Single partition, mmls not needed"
 }
-
 
 ######### IMAGE MOUNTING ###################
 
@@ -114,7 +113,7 @@ function mount_e01(){
       ewfmount "${ipath}" /tmp/raw   && makegreen "Success!" && ipath="/tmp/raw/ewf1" || exit
 }
 
-#Mount vmdk, vdi and qcows2 Image types as a network block device
+#Mount vmdk, vdi and qcow2 Image types as a network block device
 function mount_nbd(){
      [ 'which qemu-nbd' == "" ] && makered "qemu-utils not installed" && sleep 1 && exit
      makered "Current Mount Status: "
@@ -124,8 +123,17 @@ function mount_nbd(){
      rmmod nbd 2>/dev/null && echo "Warning: unloading and reloading nbd"
      modprobe nbd && echo "modprobe nbd"
      makegreen "qemu-nbd -r -c /dev/nbd1 "${ipath}"" && \
-     qemu-nbd -r -c /dev/nbd1 "${ipath}" && ls /dev/nbd1*  && makegreen "Success!"
+     qemu-nbd -r -c /dev/nbd1 "${ipath}" && ls /dev/nbd1  && makegreen "Success!" 
+     makered "Set Partition Offset"
      fdisk -l /dev/nbd1 && image_src="/dev/nbd1" && echo ""  
+     read -e -p "Enter the starting block: "  starting_block && \
+     read -e -p "Set disk block size:  " -i "512" block_size && \
+     partition_offset=$(echo $(($starting_block * $block_size))) && \
+     makegreen "Offset: $starting_block * $block_size = $partition_offset" && \
+     offset="offset=$partition_offset" || \
+     echo "Single partition"
+     mount_image
+     exit
 }
 
 #Mount raw split images using affuse
@@ -141,7 +149,7 @@ function bit_locker_mount(){
      [ 'which bdemount' == "" ] && makered "bdemount is not installed" && sleep 1 && exit
      [ "${partition_offset}" != "" ] && offset="-o $partition_offset "
      [ "$(ls -A /tmp/raw/)" ] && \
-     [ -f "${ipath}" ] && echo "Bitlocker Decryption!!!" && makered "Enter encryption password or key"
+     echo "" && echo "Bitlocker Decryption!!!" && makered "Enter encryption password or key"
      echo "-p <Password>" 
      echo "-r <Authentication Key>"
      echo ""
@@ -150,6 +158,8 @@ function bit_locker_mount(){
      makegreen "bdemount $bl_auth $offset $ipath /tmp/bde"
      bdemount $bl_auth $offset $ipath /tmp/bde   
      ls /tmp/bde/bde1 && makegreen "Success!!" && offset="" && image_src="/tmp/bde/bde1"
+     mount_image
+     exit
 }
 
 # Issue Mount command based on image type and prefs
@@ -173,11 +183,12 @@ function bit_locker_mount(){
       [ "$(ls -A $mount_dir)" ] && \
       makegreen "Success!" || makered "Mount Failed! Try reboot or mount -o "norecovery""
       echo ""
-      [ "$(ls -A $mount_dir)" ] 
+      [ "$(ls -A $mount_dir)" ] && [ "$fstype" == "ntfs" ] && mount_vss
 }
 
 #Identify and choose whether to mount any vss volumes
 function mount_vss(){
+      [ 'which vshadowinfo' == "" ] && makered "libvshadow-utils not installed" && sleep 1 && exit
       vss_dir="/tmp/vss"
       vss_info=$(vshadowinfo $image_src 2>/dev/null |grep "Number of stores:") 
       [ "${vss_info}" != "" ] && echo "VSCs found! "$vss_info && \
@@ -244,15 +255,20 @@ USAGE: ermount.sh [-h -s -u -b -rw]
 "
 }
 
+###### End of Functions ############## 
+
+
 clear
 #check root requirements 
 [ `whoami` != 'root' ] && makered "Requires Root Access!" && sleep 1 && exit
 
-# Setup mount directories and process cli parameters
+# Setup mount directories and display physical devices
 echo "Physical Disks: /dev/sd<n>" && lsblk -f|grep -e "sd.[0-9]\|nbd[0-9]" && echo ""
 mkdir -p /tmp/raw 2>/dev/null  
 mkdir -p /tmp/vss 2>/dev/null
 mkdir -p /tmp/bde 2>/dev/null
+
+#Get drive status and process any cli parameters
 [ "${1}" == "-h" ] && get_help && exit 
 [ "${1}" == "-u" ] && mount_status && mount_dir="/tmp/ermount" && umount_all
 mount_status    
@@ -261,21 +277,24 @@ echo $mount_stat && echo $raw_stat && echo $nbd_stat && echo $vss_stat && echo $
 [ "${1}" != "-rw" ] && ro_rw="ro" ||ro_rw="rw"
 [ "${1}" == "-b" ] 
 
-# start mounting process 
+
+# start mounting process and select source image and mount point
 makegreen "Mount a disk, disk image or Virtual Machine disk"
 image_source
 mount_point
 
-
-# detect image types
+# Send to mounting function based on image type
 [ -f "$image_name"002"" ] &&  echo $multi "Multiple raw disk segments detected, mounting with affuse" && mount_aff
-echo $image_type | grep -e "E01$" && echo "EWF detected, mount with ewfmount" && mount_e01
-echo $image_type | grep -e "VMDK$\|VDI$\|QCOW2$\VHD$\|VHDX" && mount_nbd
+echo $image_type | grep -ie "E01$" && echo "EWF detected, mount with ewfmount" && mount_e01
+echo $image_type | grep -ie "VMDK$\|VDI$\|QCOW2$\|VHD$\|VHDX$" && mount_nbd && echo "lll" && exit
+
+# If no image type detected, process as raw
 [ "$image_src" == "" ] && image_src="${ipath}"
-echo $image_src
+echo $image_src 
+
+#
 set_image_offset
 [ "${1}" == "-b" ] && bit_locker_mount
 # mount image and detect volume shadow copies
 mount_image
-[ "$fstype" == "ntfs" ] && mount_vss 
 
