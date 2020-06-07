@@ -45,24 +45,19 @@ mount_status(){
 
 # User input path of the image file or disk
 function image_source(){
-makered "Enter Path and Image or Device to Mount"
-      read -e -p "Image File or Device: " -i "" ipath 
+#makered "Enter Path and Image or Device to Mount"
+      read -e -p "Enter Image File or Device Path: " -i "" ipath 
       image_type=$(echo "$ipath"|awk -F . '{print toupper ($NF)}')
       [ ! -f "${ipath}" ] && [ ! -b "${ipath}" ] && makered "File or Device does not exist.." && sleep 2 && clear && exit
       image_name=$(echo $ipath|sed 's/\(.*\)\..*/\1\./')
       [ $image_type == "ISO" ] && return 1
       multi=$image_name"002"
       # Set source image and destination mount point for E01 && umount /tmp/raw 2>/dev/null 
-      echo "Image type " $image_type
-      file "$ipath" || exit
-      echo ""
-      makered "File System Type (mount -t)"
-      echo "Defaults is ntfs, see mount man pages for a complete list"
-      echo "Linux  filesystem types: ext, ext2, ext3, ext4, hpfs, iso9660, JFS, minix,
-       msdos, ncpfs nfs, ntfs, proc, Reiserfs, smb, sysv, umsdos, vfat, XFS, xiafs" 
-      read -e -p "File System:  " -i "ntfs" fstype
-      [ $fstype == "ntfs" ] && ntfs_support="show_sys_files,streams_interface=windows," && \
-      umount_vss
+      printf "Image type " 
+      makegreen $image_type || makegreen "RAW"
+      source_info=$(file "$ipath")
+      echo "Source Information"
+      makegreen $source_info
 }
 
 
@@ -70,7 +65,7 @@ makered "Enter Path and Image or Device to Mount"
 function mount_point(){
       # Set Data Source or mount point"
       echo ""
-      makered "Set Mount Point"
+      makegreen "Set Mount Point"
       echo "Set Path or Enter to Accept Default:"
       read -e -p "" -i "/tmp/ermount" mount_dir
       mkdir -p $mount_dir
@@ -81,18 +76,17 @@ function mount_point(){
 
 ######### IMAGE OFFSET #####################
 
-# Runs mmls as needed to find any partition offsets
+# Set partition offset for disk images
 function set_image_offset(){
-      [ 'which mmls' == "" ] && makered "sleuthkit not installed!!!" 
-      [ "${block_device}" != "" ] &&  return 1
-      makered "Run MMLS if Needed to Choose Partition Offset"
-      mmls "${image_src}" 2>/dev/null && \
-      read -e -p "Enter the starting block: "  starting_block && \
-      read -e -p "Set disk block size:  " -i "512" block_size && \
-      partition_offset=$(echo $(($starting_block * $block_size))) && \
-      makegreen "Offset: $starting_block * $block_size = $partition_offset" && \
-      offset="offset=$partition_offset" || \
-      echo "Single partition, mmls not needed"
+     blkid $image_src |grep -e "PTTYPE=\|PTUUID=\|PARTUUID=" && \
+     makegreen "Set Partition Offset" && \
+     fdisk -l $image_src && echo ""  && \
+     read -e -p "Enter the starting block: " -i "2048" starting_block && \
+     # Next line has been commented. Use default block size of 512 
+     # read -e -p "Set disk block size:  " -i "512" block_size && \
+     partition_offset=$(echo $(($starting_block * 512))) && \
+     makegreen "Offset: $starting_block * $block_size = $partition_offset" && \
+     offset="offset=$partition_offset" 
 }
 
 ######### IMAGE MOUNTING ###################
@@ -101,15 +95,7 @@ function set_image_offset(){
 function mount_e01(){
       [ 'which ewfmount' == "" ] && makered "ewf-tools not installed" && sleep 1 && exit
       image_src="/tmp/raw/ewf1"
-      makered "Current Mount Status: "
-      echo $raw_stat
-      echo $mount_stat
-      [ "$(ls -A /tmp/raw/)" ] && echo "Attempting to remount /tmp/raw/ " && umount /tmp/raw/ -f -A && makegreen "Sucessfully umounted previous E01"
-      # Try mounting E01 to /tmp/raw
-      echo "" 
-      makered "Executing ewfmount....."
-      # Mount image to $mount_dir
-      makegreen "ewfmount "${ipath}" /tmp/raw" 
+      [ "$(ls -A /tmp/raw/)" ] && echo "Attempting to remount /tmp/raw/ " && umount /tmp/raw/ -f -A && makegreen "Sucessfully umounted previous E01" 
       ewfmount "${ipath}" /tmp/raw   && makegreen "Success!" && ipath="/tmp/raw/ewf1" || exit
 }
 
@@ -124,16 +110,7 @@ function mount_nbd(){
      modprobe nbd && echo "modprobe nbd"
      makegreen "qemu-nbd -r -c /dev/nbd1 "${ipath}"" && \
      qemu-nbd -r -c /dev/nbd1 "${ipath}" && ls /dev/nbd1  && makegreen "Success!" 
-     makered "Set Partition Offset"
-     fdisk -l /dev/nbd1 && image_src="/dev/nbd1" && echo ""  
-     read -e -p "Enter the starting block: "  starting_block && \
-     read -e -p "Set disk block size:  " -i "512" block_size && \
-     partition_offset=$(echo $(($starting_block * $block_size))) && \
-     makegreen "Offset: $starting_block * $block_size = $partition_offset" && \
-     offset="offset=$partition_offset" || \
-     echo "Single partition"
-     mount_image
-     exit
+     image_src="/dev/nbd1"
 }
 
 #Mount raw split images using affuse
@@ -149,15 +126,15 @@ function bit_locker_mount(){
      [ 'which bdemount' == "" ] && makered "bdemount is not installed" && sleep 1 && exit
      [ "${partition_offset}" != "" ] && offset="-o $partition_offset "
      [ "$(ls -A /tmp/raw/)" ] && \
-     echo "" && echo "Bitlocker Decryption!!!" && makered "Enter encryption password or key"
+     echo "" && makered "Bitlocker Encryption!!!" && makered "Enter decryption password or key"
      echo "-p <Password>" 
      echo "-r <Authentication Key>"
      echo ""
      read -e -p "" bl_auth
-     makered "Mounting with bdemount!!  "
+     makegreen "Mounting with bdemount!!  "
      makegreen "bdemount $bl_auth $offset $ipath /tmp/bde"
      bdemount $bl_auth $offset $ipath /tmp/bde   
-     ls /tmp/bde/bde1 && makegreen "Success!!" && offset="" && image_src="/tmp/bde/bde1"
+     ls /tmp/bde/bde1 && makegreen "Unlocked!!" && offset="" && image_src="/tmp/bde/bde1"
      mount_image
      exit
 }
@@ -165,7 +142,12 @@ function bit_locker_mount(){
 # Issue Mount command based on image type and prefs
  function mount_image(){
       echo ""
-      makered "Executing Mount Command....."
+      makegreen "Executing Mount Command....."
+      echo "Defaults is ntfs, see mount man pages for a complete list"
+      echo "Common filesystem types: ntfs, vfat, ext3, ext4, hpfsplus, iso9660, udf" 
+      read -e -p "File System Type:  " -i "ntfs" fstype
+      [ $fstype == "ntfs" ] && ntfs_support="show_sys_files,streams_interface=windows," && \
+      umount_vss
       # Mount image to $mount_dir
       loop="loop,"
       mount_options="-t $fstype -o $ro_rw,"
@@ -249,7 +231,7 @@ USAGE: ermount.sh [-h -s -u -b -rw]
 
 
       Default mount point: /tmp/ermount
-      Requires: mmls, ewf-tools, afflib3, qemu-utils, mount and bdemount for bitlocker decryption
+      Requires: ewf-tools, afflib3, qemu-utils, mount and bdemount for bitlocker decryption
       Warning: forcefully disconnects mounted drives and Network Block Devices
       When in doubt reboot
 "
@@ -263,7 +245,6 @@ clear
 [ `whoami` != 'root' ] && makered "Requires Root Access!" && sleep 1 && exit
 
 # Setup mount directories and display physical devices
-echo "Physical Disks: /dev/sd<n>" && lsblk -f|grep -e "sd.[0-9]\|nbd[0-9]" && echo ""
 mkdir -p /tmp/raw 2>/dev/null  
 mkdir -p /tmp/vss 2>/dev/null
 mkdir -p /tmp/bde 2>/dev/null
@@ -273,20 +254,21 @@ mkdir -p /tmp/bde 2>/dev/null
 [ "${1}" == "-u" ] && mount_status && mount_dir="/tmp/ermount" && umount_all
 mount_status    
 [ "${1}" == "-u" ] || [ "${1}" == "-s" ] &&  echo "ERMount Mount Point Status:" && \
-echo $mount_stat && echo $raw_stat && echo $nbd_stat && echo $vss_stat && echo $vsc_stat && echo $bde_stat && exit
+echo $mount_stat && echo $raw_stat && echo $nbd_stat && echo $vss_stat && echo $vsc_stat && echo $bde_stat && \
+echo "" && echo "Physical Disks: /dev/sd<n>" && lsblk -f|grep -e "sd.[0-9]\|nbd[0-9]" && echo "" && exit
 [ "${1}" != "-rw" ] && ro_rw="ro" ||ro_rw="rw"
 [ "${1}" == "-b" ] 
 
 
 # start mounting process and select source image and mount point
-makegreen "Mount a disk, disk image or Virtual Machine disk"
+makegreen "ERMount a disk, disk image or VM"
 image_source
 mount_point
 
 # Send to mounting function based on image type
 [ -f "$image_name"002"" ] &&  echo $multi "Multiple raw disk segments detected, mounting with affuse" && mount_aff
-echo $image_type | grep -ie "E01$" && echo "EWF detected, mount with ewfmount" && mount_e01
-echo $image_type | grep -ie "VMDK$\|VDI$\|QCOW2$\|VHD$\|VHDX$" && mount_nbd && echo "lll" && exit
+echo $image_type | grep -qie "E01$" && mount_e01
+echo $image_type | grep -ie "VMDK$\|VDI$\|QCOW2$\|VHD$\|VHDX$" && mount_nbd 
 
 # If no image type detected, process as raw
 [ "$image_src" == "" ] && image_src="${ipath}"
