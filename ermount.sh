@@ -1,13 +1,15 @@
 #!/bin/bash
-# Every Ready disk mount disk script:
-# John Brown j58r0wn@gmail.com
-# Mounts disk, disk images (E01,vmdk, vdi, Raw and bitlocker) and bitlocker encryption in a linux evnironment using mmls,ewf_mount,qemu-ndb, affuse and bdemount 
+# EverReady disk mount
+# John Brown  forensic.studygroup@gmail.com
+# Mounts disk, disk images (E01,vmdk, vdi, Raw and bitlocker) in a linux evnironment using ewf_mount,qemu-ndb, affuse and bdemount 
 # WARNING:  Forcefully disconnects and remounts images and network block devices! 
-# Mounts everything in /tmp/ 
-#Quickly dealing with different drives and format. Written for use in a lab or forensic environment 
-# Requires mmls, ewf_tools, affuse, bdemount and qemu-utils 
-#tested using SANS Sift and Ubuntu 18.04
-
+# Mounts everything in /tmp/ by default
+# Images are mounted based on extension: E01, VDI, VHD, VHDX, QCOw2, AFF
+# Other wise mount is attempted as raw
+# Supports segmented disks images using aff
+# 
+# Requires ewf_tools, affuse, bdemount and qemu-utils 
+# tested using SANS Sift and Ubuntu 18.04
 
 #Produce Red Text Color 
 function makered() {
@@ -31,6 +33,7 @@ function yes-no(){
       [ "$(echo $REPLY | tr [:upper:] [:lower:])" == "y" ] &&  YES_NO="yes";
 }
 
+######### MOUNT STATUS ######################
 # Report mount status
 mount_status(){
      mount_stat=$(echo " /tmp/ermount/" && [ "$(ls -A /tmp/ermount/ 2>/dev/null)" ] && makered " Mounted" || makegreen " Not Mounted" )
@@ -42,8 +45,7 @@ mount_status(){
 }
 
 ######### MOUNT PREFS ######################
-
-# User input path of the image file or disk
+# User supplies input path of the image file or disk
 function image_source(){
 #makered "Enter Path and Image or Device to Mount"
       read -e -p "Enter Image File or Device Path: " -i "" ipath 
@@ -58,10 +60,10 @@ function image_source(){
       source_info=$(file "$ipath")
       echo "Source Information"
       makegreen $source_info
+
 }
 
-
-# User input to set mount directories 
+# User input to set mount directory (Default /tmp/ermount)
 function mount_point(){
       # Set Data Source or mount point"
       echo ""
@@ -75,9 +77,8 @@ function mount_point(){
 }
 
 ######### IMAGE OFFSET #####################
-
 # Set partition offset for disk images
-function set_image_offset(){
+function set_image_offset(){  
      blkid $image_src |grep -e "PTTYPE=\|PTUUID=\|PARTUUID=" && \
      makegreen "Set Partition Offset" && \
      fdisk -l $image_src && echo ""  && \
@@ -85,12 +86,11 @@ function set_image_offset(){
      # Next line has been commented. Use default block size of 512 
      # read -e -p "Set disk block size:  " -i "512" block_size && \
      partition_offset=$(echo $(($starting_block * 512))) && \
-     makegreen "Offset: $starting_block * $block_size = $partition_offset" && \
+     makegreen "Offset: $starting_block * 512 = $partition_offset" && \
      offset="offset=$partition_offset" 
 }
 
 ######### IMAGE MOUNTING ###################
-
 # Mount images in expert witness format as raw image to /tmp/raw
 function mount_e01(){
       [ 'which ewfmount' == "" ] && makered "ewf-tools not installed" && sleep 1 && exit
@@ -109,7 +109,7 @@ function mount_nbd(){
      rmmod nbd 2>/dev/null && echo "Warning: unloading and reloading nbd"
      modprobe nbd && echo "modprobe nbd"
      makegreen "qemu-nbd -r -c /dev/nbd1 "${ipath}"" && \
-     qemu-nbd -r -c /dev/nbd1 "${ipath}" && ls /dev/nbd1  && makegreen "Success!" 
+     qemu-nbd -r -c /dev/nbd1 "${ipath}" && ls /dev/nbd1  && makegreen "Success!" || exit
      image_src="/dev/nbd1"
 }
 
@@ -121,7 +121,7 @@ function mount_aff(){
      affuse "${ipath}" /tmp/raw && image_src=$(find /tmp/raw/ -type f) 
 }
 
-#Decrypt bitlocker disks and mount partitions
+# Decrypt bitlocker disks and mount partitions
 function bit_locker_mount(){
      [ 'which bdemount' == "" ] && makered "bdemount is not installed" && sleep 1 && exit
      [ "${partition_offset}" != "" ] && offset="-o $partition_offset "
@@ -165,7 +165,8 @@ function bit_locker_mount(){
       [ "$(ls -A $mount_dir)" ] && \
       makegreen "Success!" || makered "Mount Failed! Try reboot or mount -o "norecovery""
       echo ""
-      [ "$(ls -A $mount_dir)" ] && [ "$fstype" == "ntfs" ] && mount_vss
+      [ "$(ls -A $mount_dir)" ] && [ "$fstype" == "ntfs" ] && mount_vss 
+      exit
 }
 
 #Identify and choose whether to mount any vss volumes
@@ -237,9 +238,9 @@ USAGE: ermount.sh [-h -s -u -b -rw]
 "
 }
 
-###### End of Functions ############## 
+###### END OF FUNTIONS  ############## 
 
-
+###### COMMAND EXECUTION ############# 
 clear
 #check root requirements 
 [ `whoami` != 'root' ] && makered "Requires Root Access!" && sleep 1 && exit
@@ -255,10 +256,9 @@ mkdir -p /tmp/bde 2>/dev/null
 mount_status    
 [ "${1}" == "-u" ] || [ "${1}" == "-s" ] &&  echo "ERMount Mount Point Status:" && \
 echo $mount_stat && echo $raw_stat && echo $nbd_stat && echo $vss_stat && echo $vsc_stat && echo $bde_stat && \
-echo "" && echo "Physical Disks: /dev/sd<n>" && lsblk -f|grep -e "sd.[0-9]\|nbd[0-9]" && echo "" && exit
+echo "" && echo "Physical Disks: /dev/sd<n>" && lsblk -f /dev/sd* && echo "" && exit
 [ "${1}" != "-rw" ] && ro_rw="ro" ||ro_rw="rw"
 [ "${1}" == "-b" ] 
-
 
 # start mounting process and select source image and mount point
 makegreen "ERMount a disk, disk image or VM"
@@ -267,16 +267,20 @@ mount_point
 
 # Send to mounting function based on image type
 [ -f "$image_name"002"" ] &&  echo $multi "Multiple raw disk segments detected, mounting with affuse" && mount_aff
+echo $image_type | grep -qie "AFF$" && mount_aff
 echo $image_type | grep -qie "E01$" && mount_e01
 echo $image_type | grep -ie "VMDK$\|VDI$\|QCOW2$\|VHD$\|VHDX$" && mount_nbd 
 
 # If no image type detected, process as raw
 [ "$image_src" == "" ] && image_src="${ipath}"
-echo $image_src 
+is_device=$(echo "$image_src" | grep -i "/dev/sd")
+[ "${is_device}" != "" ] && [ "${1}" != "-b" ] && lsblk -f /dev/sd* && mount_image
+[ "${is_device}" != "" ] && [ "${1}" == "-b" ] && bit_locker_mount
 
-#
+# Set image offset if needed
 set_image_offset
+# Decrypt bitlocker if "-b" is specified
 [ "${1}" == "-b" ] && bit_locker_mount
-# mount image and detect volume shadow copies
+# mount image and detect any volume shadow copies
 mount_image
 
