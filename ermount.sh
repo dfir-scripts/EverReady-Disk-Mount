@@ -144,12 +144,12 @@ function bit_locker_mount(){
       echo ""
       makegreen "Executing Mount Command....."
       echo "Defaults is ntfs, see mount man pages for a complete list"
-      echo "Common filesystem types: ntfs, vfat, ext3, ext4, hpfsplus, iso9660, udf" 
+      echo "Common filesystem types: ntfs, vfat, ext3, ext4, hfsplus, iso9660, udf" 
       read -e -p "File System Type:  " -i "ntfs" fstype
       [ $fstype == "ntfs" ] && ntfs_support="show_sys_files,streams_interface=windows," && \
       umount_vss
       # Mount image to $mount_dir
-      loop="loop,"
+      echo $image_src | grep -qiv "/dev/sd" && loop="loop,"
       mount_options="-t $fstype -o $ro_rw,"
       [ $image_type == "ISO" ] && mount_options=""
       [ "${block_device}" != "" ] && mount_options="-o $ro_rw,"
@@ -268,7 +268,7 @@ mount_point
 # Send to mounting function based on image type
 [ -f "$image_name"002"" ] &&  echo $multi "Multiple raw disk segments detected, mounting with affuse" && mount_aff
 echo $image_type | grep -qie "AFF$" && mount_aff
-echo $image_type | grep -qie "E01$" && mount_e01
+echo $image_type | grep -ie "E01$\|S01" && mount_e01
 echo $image_type | grep -ie "VMDK$\|VDI$\|QCOW2$\|VHD$\|VHDX$" && mount_nbd 
 
 # If no image type detected, process as raw
