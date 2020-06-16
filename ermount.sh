@@ -96,6 +96,7 @@ function mount_e01(){
       [ 'which ewfmount' == "" ] && makered "ewf-tools not installed" && sleep 1 && exit
       image_src="/tmp/raw/ewf1"
       [ "$(ls -A /tmp/raw/)" ] && echo "Attempting to remount /tmp/raw/ " && umount /tmp/raw/ -f -A && makegreen "Sucessfully umounted previous E01" 
+      makegreen "Executing ewfmount command: ewfmount "${ipath}" /tmp/raw"
       ewfmount "${ipath}" /tmp/raw   && makegreen "Success!" && ipath="/tmp/raw/ewf1" || exit
 }
 
@@ -109,7 +110,9 @@ function mount_nbd(){
      rmmod nbd 2>/dev/null && echo "Warning: unloading and reloading nbd"
      modprobe nbd && echo "modprobe nbd"
      makegreen "qemu-nbd -r -c /dev/nbd1 "${ipath}"" && \
-     qemu-nbd -r -c /dev/nbd1 "${ipath}" && ls /dev/nbd1  && makegreen "Success!" || exit
+     makegreen " Excecuting:  qemu-nbd -r -c /dev/nbd1 ${ipath}" && \
+     qemu-nbd -r -c /dev/nbd1 "${ipath}" && \
+     ls /dev/nbd1  && makegreen "Success!" || exit
      image_src="/dev/nbd1"
 }
 
@@ -118,6 +121,7 @@ function mount_aff(){
      [ 'which affuse' == "" ] && makered "afflib-tools not installed" && sleep 1 && exit
      [ "$(ls -A /tmp/raw/)" ] && fusermount -uz /tmp/raw/ 
      [ "$(ls -A /tmp/raw/)" ] && echo "raw mount point in use, try manual unmount or reboot" && exit
+     makegreen "Executing Affuse command: affuse "${ipath}" /tmp/raw"
      affuse "${ipath}" /tmp/raw && image_src=$(find /tmp/raw/ -type f) 
 }
 
