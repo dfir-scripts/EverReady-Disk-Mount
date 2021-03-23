@@ -1,15 +1,15 @@
 #!/bin/bash
 # EverReady disk mount
 # John Brown  forensic.studygroup@gmail.com
-# Mounts disk, disk images (E01,vmdk, vdi, Raw and bitlocker) in a linux evnironment using ewf_mount,qemu-ndb, affuse and bdemount 
-# WARNING:  Forcefully disconnects and remounts images and network block devices! 
-# Mounts everything in /tmp/ by default
+# Mounts disks, disk images (E01,vmdk, vdi, Raw and bitlocker) in a linux evnironment using ewf_mount,qemu-ndb, affuse and bdemount 
+# WARNING:  Forcefully attempts to disconnect and remounts images and network block devices! 
+# When in doubt, reboot
+# Creates directories in /mnt/ for different disk and amge types
 # Images are mounted based on extension: E01, VDI, VHD, VHDX, QCOw2, AFF
-# Other wise mount is attempted as raw
+# Otherwise mount is attempted as raw
 # Supports segmented disks images using aff
 # 
 # Requires ewf_tools, affuse, bdemount and qemu-utils 
-# tested using SANS Sift and Ubuntu 18.04
 
 #Produce Red Text Color 
 function makered() {
@@ -36,13 +36,21 @@ function yes-no(){
 ######### MOUNT STATUS ######################
 # Report mount status
 mount_status(){
-     mount_stat=$(echo " /tmp/ermount/" && [ "$(ls -A /tmp/ermount/ 2>/dev/null)" ] && makered " Mounted" || makegreen " Not Mounted" )
-     raw_stat=$(echo " /tmp/raw/" && [ "$(ls -A /tmp/raw/ 2>/dev/null)" ] && makered " Mounted"  || makegreen " Not Mounted")
-     nbd_stat=$(echo " /dev/nbd1/" && [ "$(ls /dev/nbd1 2>/dev/null)" ] && makered " Active"  || makegreen " Inactive")
-     vss_stat=$(echo " /tmp/vss/" && [ "$(ls /tmp/vss 2>/dev/null)" ] && makered " Active"  || makegreen " Inactive")
-     vsc_stat=$(echo " /tmp/shadow/" && [ "$(ls /tmp/shadow 2>/dev/null)" ] && makered " Active"  || makegreen " Inactive")
-     bde_stat=$(echo " /tmp/bde/" && [ "$(ls /tmp/bde 2>/dev/null)" ] && makered " Active"  || makegreen " Inactive")
+     mount_stat=$(echo " /mnt/image_mount/" && [ "$(ls -A /mnt/image_mount/ 2>/dev/null)" ] && makered " Mounted" || makegreen " Not Mounted" )
+     raw_stat=$(echo " /mnt/raw/........" && [ "$(ls -A /mnt/raw/ 2>/dev/null)" ] && makered " Mounted" || makegreen " Not Mounted")
+     nbd_stat=$(echo " /dev/nbd1/......." && [ "$(ls /dev/nbd1 2>/dev/null)" ] && makered " Active" || makegreen " Inactive")
+     vss_stat=$(echo " /mnt/vss/........" && [ "$(ls /mnt/vss 2>/dev/null)" ] && makered " Active" || makegreen " Inactive")
+     vsc_stat=$(echo " /mnt/shadow/....." && [ "$(ls /mnt/shadow 2>/dev/null)" ] && makered " Active" || makegreen " Inactive")
+     bde_stat=$(echo " /mnt/bde/........" && [ "$(ls /mnt/bde 2>/dev/null)" ] && makered " Active" || makegreen " Inactive")
+     makered "ERMount Volume Mount Points"
+     echo $mount_stat && echo $raw_stat && echo $nbd_stat && echo $vss_stat && echo $vsc_stat && echo $bde_stat
+     echo ""
+     makered "Disk Status"
+     lsblk -o NAME,SIZE,FSTYPE,FSAVAIL,FSUSE%,MOUNTPOINT|grep -v loop|awk '{ printf "%-15s %-12s %-10s %-10s %-10s %s\n", $1, $2, $3, $4,$5,$6}'|column -t
 }
+
+
+
 
 ######### MOUNT PREFS ######################
 # User supplies input path of the image file or disk
@@ -54,7 +62,7 @@ function image_source(){
       image_name=$(echo $ipath|sed 's/\(.*\)\..*/\1\./')
       [ $image_type == "ISO" ] && return 1
       multi=$image_name"002"
-      # Set source image and destination mount point for E01 && umount /tmp/raw 2>/dev/null 
+      # Set source image and destination mount point for E01 && umount /mnt/raw 2>/dev/null 
       printf "Image type " 
       makegreen $image_type || makegreen "RAW"
       source_info=$(file "$ipath")
@@ -63,13 +71,13 @@ function image_source(){
 
 }
 
-# User input to set mount directory (Default /tmp/ermount)
+# User input to set mount directory (Default /mnt/image_mount)
 function mount_point(){
       # Set Data Source or mount point"
       echo ""
       makegreen "Set Mount Point"
       echo "Set Path or Enter to Accept Default:"
-      read -e -p "" -i "/tmp/ermount" mount_dir
+      read -e -p "" -i "/mnt/image_mount" mount_dir
       mkdir -p $mount_dir
       [ "$(ls -A $mount_dir)" ] && umount $mount_dir -f -A
       [ "$(ls -A $mount_dir)" ] && echo "$mount_dir busy, try different mount point or reboot" && sleep 2 && exit
@@ -91,13 +99,13 @@ function set_image_offset(){
 }
 
 ######### IMAGE MOUNTING ###################
-# Mount images in expert witness format as raw image to /tmp/raw
+# Mount images in expert witness format as raw image to /mnt/raw
 function mount_e01(){
       [ 'which ewfmount' == "" ] && makered "ewf-tools not installed" && sleep 1 && exit
-      image_src="/tmp/raw/ewf1"
-      [ "$(ls -A /tmp/raw/)" ] && echo "Attempting to remount /tmp/raw/ " && umount /tmp/raw/ -f -A && makegreen "Sucessfully umounted previous E01" 
-      makegreen "Executing ewfmount command: ewfmount "${ipath}" /tmp/raw"
-      ewfmount "${ipath}" /tmp/raw   && makegreen "Success!" && ipath="/tmp/raw/ewf1" || exit
+      image_src="/mnt/raw/ewf1"
+      [ "$(ls -A /mnt/raw/)" ] && echo "Attempting to remount /mnt/raw/ " && umount /mnt/raw/ -f -A && makegreen "Sucessfully umounted previous E01" 
+      makegreen "Executing ewfmount command: ewfmount "${ipath}" /mnt/raw"
+      ewfmount "${ipath}" /mnt/raw   && makegreen "Success!" && ipath="/mnt/raw/ewf1" || exit
 }
 
 #Mount vmdk, vdi and qcow2 Image types as a network block device
@@ -119,26 +127,26 @@ function mount_nbd(){
 #Mount raw split images using affuse
 function mount_aff(){
      [ 'which affuse' == "" ] && makered "afflib-tools not installed" && sleep 1 && exit
-     [ "$(ls -A /tmp/raw/)" ] && fusermount -uz /tmp/raw/ 
-     [ "$(ls -A /tmp/raw/)" ] && echo "raw mount point in use, try manual unmount or reboot" && exit
-     makegreen "Executing Affuse command: affuse "${ipath}" /tmp/raw"
-     affuse "${ipath}" /tmp/raw && image_src=$(find /tmp/raw/ -type f) 
+     [ "$(ls -A /mnt/raw/)" ] && fusermount -uz /mnt/raw/ 
+     [ "$(ls -A /mnt/raw/)" ] && echo "raw mount point in use, try manual unmount or reboot" && exit
+     makegreen "Executing Affuse command: affuse "${ipath}" /mnt/raw"
+     affuse "${ipath}" /mnt/raw && image_src=$(find /mnt/raw/ -type f) 
 }
 
 # Decrypt bitlocker disks and mount partitions
 function bit_locker_mount(){
      [ 'which bdemount' == "" ] && makered "bdemount is not installed" && sleep 1 && exit
      [ "${partition_offset}" != "" ] && offset="-o $partition_offset "
-     [ "$(ls -A /tmp/raw/)" ] && \
+     [ "$(ls -A /mnt/raw/)" ] && \
      echo "" && makered "Bitlocker Encryption!!!" && makered "Enter decryption password or key"
      echo "-p <Password>" 
      echo "-r <Authentication Key>"
      echo ""
      read -e -p "" bl_auth
      makegreen "Mounting with bdemount!!  "
-     makegreen "bdemount $bl_auth $offset $ipath /tmp/bde"
-     bdemount $bl_auth $offset $ipath /tmp/bde   
-     ls /tmp/bde/bde1 && makegreen "Unlocked!!" && offset="" && image_src="/tmp/bde/bde1"
+     makegreen "bdemount $bl_auth $offset $ipath /mnt/bde"
+     bdemount $bl_auth $offset $ipath /mnt/bde   
+     ls /mnt/bde/bde1 && makegreen "Unlocked!!" && offset="" && image_src="/mnt/bde/bde1"
      mount_image
      exit
 }
@@ -176,18 +184,19 @@ function bit_locker_mount(){
 #Identify and choose whether to mount any vss volumes
 function mount_vss(){
       [ 'which vshadowinfo' == "" ] && makered "libvshadow-utils not installed" && sleep 1 && exit
-      vss_dir="/tmp/vss"
-      vss_info=$(vshadowinfo $image_src 2>/dev/null |grep "Number of stores:") 
+      vss_dir="/mnt/vss"
+      vss_info=$(vshadowinfo $image_src 2>/dev/null |grep "Number of stores:"|grep -v "0$")
+      vshadowinfo $image_src 
       [ "${vss_info}" != "" ] && echo "VSCs found! "$vss_info && \
       echo "Mount Volume Shadow Copies?" && yes-no && vsc="yes"
       [ "${offset}" == "yes" ] && offset="-o $offset "  
       [ "${vsc}" == "yes" ] && vshadowmount $image_src $offset$vss_dir && \
       ls $vss_dir | while read vsc;
       do 
-        mkdir -p /tmp/shadow/$vsc
-        mount -t ntfs -o ro,loop,show_sys_files,streams_interface=windows /tmp/vss/$vsc /tmp/shadow/$vsc
+        mkdir -p /mnt/shadow/$vsc
+        mount -t ntfs -o ro,loop,show_sys_files,streams_interface=windows /mnt/vss/$vsc /mnt/shadow/$vsc
       done  || exit
-      ls /tmp/shadow/ && makegreen "Success! VSCs mounted on /tmp/shadow" || echo "No Volume Shadow Copies mounted"
+      ls /mnt/shadow/ && makegreen "Success! VSCs mounted on /mnt/shadow" || echo "No Volume Shadow Copies mounted"
 }
 
 ######### UNMOUNT IMAGES ###################
@@ -195,29 +204,25 @@ function mount_vss(){
 function umount_all(){
       echo "Umount commands sent to drives mounted in /tmp and NBD unloaded" && echo ""
       umount_vss
-      [ "$(ls -A /tmp/bde 2>/dev/null)" ] && umount /tmp/bde -f -A || fusermount -uz /tmp/bde 2>/dev/null
-      [ "$(ls -A /tmp/ermount 2>/dev/null)" ] && umount /tmp/ermount -f -A || fusermount -uz /tmp/ermount 2>/dev/null
-      [ "$(ls -A /tmp/raw/ 2>/dev/null)" ] && umount /tmp/raw -f -A || fusermount -uz /tmp/raw/ 2>/dev/null
+      [ "$(ls -A /mnt/bde 2>/dev/null)" ] && umount /mnt/bde -f -A || fusermount -uz /mnt/bde 2>/dev/null
+      [ "$(ls -A /mnt/image_mount 2>/dev/null)" ] && umount /mnt/image_mount -f -A || fusermount -uz /mnt/image_mount 2>/dev/null
+      [ "$(ls -A /mnt/raw/ 2>/dev/null)" ] && umount /mnt/raw -f -A || fusermount -uz /mnt/raw/ 2>/dev/null
       ls /dev/nbd1p1 2>/dev/null && qemu-nbd -d /dev/nbd1 2>/dev/null
       lsmod |grep -i ^nbd && rmmod nbd 2>/dev/null && echo "Warning: unloading Network Block Device"
-      rmdir /tmp/ermount 2>/dev/null
-      rmdir /tmp/raw 2>/dev/null
-      rmdir /tmp/bde 2>/dev/null
       mount_status
 }
 
 #Identify and umount any previously mounted vss volumes
 function umount_vss(){
-      vss_dir="/tmp/vss"
+      vss_dir="/mnt/vss"
       #umount any existing mounts
       fusermount -uz $vss_dir 2>/dev/null || return 1
-      ls /tmp/shadow/ 2>/dev/null|while read vsc;
+      ls /mnt/shadow/ 2>/dev/null|while read vsc;
       do 
-        umount /tmp/shadow/$vsc 2>/dev/null
-        rmdir /tmp/shadow/$vsc 2>/dev/null
-        echo "/tmp/shadow/$vsc umounted"
+        umount /mnt/shadow/$vsc 2>/dev/null
+        rmdir /mnt/shadow/$vsc 2>/dev/null
+        echo "/mnt/shadow/$vsc umounted"
       done 
-      rmdir /tmp/vss 2>/dev/null
 }
 
 ######### Help File ###################
@@ -235,7 +240,7 @@ USAGE: ermount.sh [-h -s -u -b -rw]
            -rw mount image read write
 
 
-      Default mount point: /tmp/ermount
+      Default mount point: /mnt/image_mount
       Requires: ewf-tools, afflib3, qemu-utils, mount and bdemount for bitlocker decryption
       Warning: forcefully disconnects mounted drives and Network Block Devices
       When in doubt reboot
@@ -250,35 +255,33 @@ clear
 [ `whoami` != 'root' ] && makered "Requires Root Access!" && sleep 1 && exit
 
 # Setup mount directories and display physical devices
-mkdir -p /tmp/raw 2>/dev/null  
-mkdir -p /tmp/vss 2>/dev/null
-mkdir -p /tmp/bde 2>/dev/null
+mkdir -p /mnt/raw 2>/dev/null  
+mkdir -p /mnt/vss 2>/dev/null
+mkdir -p /mnt/bde 2>/dev/null
 
-#Get drive status and process any cli parameters
+#Process Cli params and get mount status
 [ "${1}" == "-h" ] && get_help && exit 
-[ "${1}" == "-u" ] && mount_status && mount_dir="/tmp/ermount" && umount_all
-mount_status    
-[ "${1}" == "-u" ] || [ "${1}" == "-s" ] &&  echo "ERMount Mount Point Status:" && \
-echo $mount_stat && echo $raw_stat && echo $nbd_stat && echo $vss_stat && echo $vsc_stat && echo $bde_stat && \
-echo "" && echo "Physical Disks: /dev/sd<n>" && lsblk -f /dev/sd* && echo "" && exit
+[ "${1}" == "-u" ] && umount_all && exit 
+[ "${1}" == "-s" ] && mount_status && exit
+mount_status
 [ "${1}" != "-rw" ] && ro_rw="ro" ||ro_rw="rw"
-[ "${1}" == "-b" ] 
+##### [ "${1}" == "-b" ] 
 
 # start mounting process and select source image and mount point
-makegreen "ERMount a disk, disk image or VM"
+makegreen "Use ERMount to mount a disk, disk image"
 image_source
 mount_point
 
 # Send to mounting function based on image type
 [ -f "$image_name"002"" ] &&  echo $multi "Multiple raw disk segments detected, mounting with affuse" && mount_aff
-echo $image_type | grep -qie "AFF$" && mount_aff
+echo $image_type | grep -qie "AFF$\|VHD$\|VHDX$" && mount_aff
 echo $image_type | grep -ie "E01$\|S01" && mount_e01
-echo $image_type | grep -ie "VMDK$\|VDI$\|QCOW2$\|VHD$\|VHDX$" && mount_nbd 
+echo $image_type | grep -ie "VMDK$\|VDI$\|QCOW2$" && mount_nbd 
 
 # If no image type detected, process as raw
 [ "$image_src" == "" ] && image_src="${ipath}"
-is_device=$(echo "$image_src" | grep -i "/dev/sd")
-[ "${is_device}" != "" ] && [ "${1}" != "-b" ] && lsblk -f /dev/sd* && mount_image
+is_device=$(echo "$image_src" | grep -i "/dev/")
+[ "${is_device}" != "" ] && [ "${1}" != "-b" ] && fdisk -l |grep $image_src && mount_image
 [ "${is_device}" != "" ] && [ "${1}" == "-b" ] && bit_locker_mount
 
 # Set image offset if needed
