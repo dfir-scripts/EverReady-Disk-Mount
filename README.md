@@ -22,6 +22,8 @@ When in doubt reboot
 Jun 5, 2020<br>
    Initial commit<br><br>
 Mar 23, 2021<br> 
+   Changed default mount location from /tmp/ermount to /mnt/image_mount<br>
+   Changed working volume mount locations from /tmp/ to /mnt/<br>
    Fixed vsc mount option showing when there are no vscs<br>
    Updated status formatting to display nvme and other disk types<br>
    Changed vhd(x) mounting to affuse allow mounting in WSL<br>
