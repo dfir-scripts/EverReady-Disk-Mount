@@ -17,3 +17,11 @@ Default mount point: /tmp/ermount<br>
 Requires: mmls, ewf-tools, afflib3, qemu-utils, mount and bdemount for bitlocker decryption<br>
 Warning: forcefully disconnects mounted drives and Network Block Devices<br>
 When in doubt reboot
+
+**Change Log:**<br>
+Jun 5, 2020<br>
+   Initial commit<br><br>
+Mar 23, 2021<br> 
+   Fixed vsc mount option showing when there are no vscs<br>
+   Updated status formatting to display nvme and other disk types<br>
+   Changed vhd(x) mounting to affuse allow mounting in WSL<br>
