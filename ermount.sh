@@ -42,11 +42,11 @@ mount_status(){
      vss_stat=$(echo " /mnt/vss/........" && [ "$(ls /mnt/vss 2>/dev/null)" ] && makered " Active" || makegreen " Inactive")
      vsc_stat=$(echo " /mnt/shadow/....." && [ "$(ls /mnt/shadow 2>/dev/null)" ] && makered " Active" || makegreen " Inactive")
      bde_stat=$(echo " /mnt/bde/........" && [ "$(ls /mnt/bde 2>/dev/null)" ] && makered " Active" || makegreen " Inactive")
-     makered "ERMount Volume Mount Points"
-     echo $mount_stat && echo $raw_stat && echo $nbd_stat && echo $vss_stat && echo $vsc_stat && echo $bde_stat
-     echo ""
      makered "Disk Status"
      lsblk -o NAME,SIZE,FSTYPE,FSAVAIL,FSUSE%,MOUNTPOINT 2>/dev/null || lsblk
+     echo ""     
+     makered "ERMount Volume Mount Points"
+     echo $mount_stat && echo $raw_stat && echo $nbd_stat && echo $vss_stat && echo $vsc_stat && echo $bde_stat
 }
 
 
