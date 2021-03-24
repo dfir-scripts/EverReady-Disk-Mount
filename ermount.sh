@@ -47,8 +47,6 @@ mount_status(){
      echo ""
      makered "Disk Status"
      lsblk -o NAME,SIZE,FSTYPE,FSAVAIL,FSUSE%,MOUNTPOINT 2>/dev/null || lsblk
-     lsblk -o NAME,SIZE,FSTYPE,FSAVAIL,FSUSE%,MOUNTPOINT 2>/dev/null |grep -v loop|\
-     awk '{ printf "%-15s %-12s %-10s %-10s %-10s %s\n", $1, $2, $3, $4,$5,$6}'|column -t
 }
 
 
