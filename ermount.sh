@@ -90,7 +90,7 @@ function set_image_offset(){
      blkid $image_src |grep -e "PTTYPE=\|PTUUID=\|PARTUUID=" && \
      makegreen "Set Partition Offset" && \
      fdisk -l $image_src && echo ""  && \
-     read -e -p "Enter the starting block: " -i "" starting_block && \
+     read -e -p "Enter the starting block: " -i "" starting_block 
      # Next line has been commented. Use default block size of 512 
      # read -e -p "Set disk block size:  " -i "512" block_size && \
      partition_offset=$(echo $(($starting_block * 512))) && \
