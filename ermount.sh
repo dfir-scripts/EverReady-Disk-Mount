@@ -130,7 +130,7 @@ function mount_aff(){
      [ "$(ls -A /mnt/raw/)" ] && fusermount -uz /mnt/raw/ 
      [ "$(ls -A /mnt/raw/)" ] && echo "raw mount point in use, try manual unmount or reboot" && exit
      makegreen "Executing Affuse command: affuse "${ipath}" /mnt/raw"
-     affuse "${ipath}" /mnt/raw && image_src=$(find /mnt/raw/ -type f) 
+     affuse "${ipath}" /mnt/raw && image_src=$(find /mnt/raw/ -type f) || mount_nbd
 }
 
 # Decrypt bitlocker disks and mount partitions
