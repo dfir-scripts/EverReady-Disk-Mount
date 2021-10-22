@@ -20,7 +20,8 @@ When in doubt reboot
 
 **Change Log:**<br>
 Oct 21, 2021
-  Try try mounting nbd when affuse fails 
+  Added nbd mount if affuse fails
+  Fixed issue that prevented entering partition starting block 
 
 Mar 23, 2021<br> 
    Changed default mount location from /tmp/ermount to /mnt/image_mount<br>
