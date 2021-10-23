@@ -280,7 +280,7 @@ echo $image_type | grep -ie "VMDK$\|VDI$\|QCOW2$" && mount_nbd
 
 # If no image type detected, process as raw
 [ "$image_src" == "" ] && image_src="${ipath}"
-is_device=$(echo "$image_src" | grep -i "/dev/")
+is_device=$(echo "$image_src" | grep -i "/dev/" |grep -vi "nbd1")
 [ "${is_device}" != "" ] && [ "${1}" != "-b" ] && fdisk -l |grep $image_src && mount_image
 [ "${is_device}" != "" ] && [ "${1}" == "-b" ] && bit_locker_mount
 
