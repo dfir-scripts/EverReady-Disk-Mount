@@ -230,7 +230,7 @@ get_help(){
 makegreen "EverReady Disk Mount"
 makegreen "Mount/umounts disk and disk images (E01, vmdk, vhd(x), vdi, raw, iso, hfs+, qcow2 and vss)"
 
-USAGE: ermount.sh [-h -s -u -b -rw]
+USAGE: $0 [-h -s -u -b -rw]
 	OPTIONS:
            -h this help text
            -s ermount status
