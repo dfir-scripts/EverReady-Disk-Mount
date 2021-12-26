@@ -229,7 +229,6 @@ function umount_vss(){
 get_help(){
 makegreen "EverReady Disk Mount"
 makegreen "Mount/umounts disk and disk images (E01, vmdk, vhd(x), vdi, raw, iso, hfs+, qcow2 and vss)"
-echo "Automation script mounts disks read only using disk mount tools; qemu-nbd, ewfmount, affuse, bdemount  
 
 USAGE: ermount.sh [-h -s -u -b -rw]
 	OPTIONS:
@@ -239,9 +238,8 @@ USAGE: ermount.sh [-h -s -u -b -rw]
            -b mount bitlocker encrypted volume
            -rw mount image read write
 
-
       Default mount point: /mnt/image_mount
-      Requires: ewf-tools, afflib3, qemu-utils, mount and bdemount for bitlocker decryption
+      Requires: ewf-tools, afflib3, qemu-utils, bdemount for bitlocker decryption
       Warning: forcefully disconnects mounted drives and Network Block Devices
       When in doubt reboot
 "
