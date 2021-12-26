@@ -1,4 +1,4 @@
-#!/bin/bash
+#! /bin/bash
 # EverReady disk mount
 # John Brown  forensic.studygroup@gmail.com
 # Mounts disks, disk images (E01,vmdk, vdi, Raw and bitlocker) in a linux evnironment using ewf_mount,qemu-ndb, affuse and bdemount 
@@ -45,7 +45,7 @@ mount_status(){
      makered "Disk Status"
      lsblk -o NAME,SIZE,FSTYPE,FSAVAIL,FSUSE%,MOUNTPOINT 2>/dev/null || lsblk
      echo ""     
-     makered "ERMount Volume Mount Points"
+     makered "ermount Volume Mount Points"
      echo $mount_stat && echo $raw_stat && echo $nbd_stat && echo $vss_stat && echo $vsc_stat && echo $bde_stat
 }
 
@@ -87,7 +87,6 @@ function mount_point(){
 ######### IMAGE OFFSET #####################
 # Set partition offset for disk images
 function set_image_offset(){  
-     blkid $image_src |grep -e "PTTYPE=\|PTUUID=\|PARTUUID=" && \
      makegreen "Set Partition Offset" && \
      fdisk -l $image_src && echo ""  && \
      read -e -p "Enter the starting block: " -i "" starting_block 
@@ -111,18 +110,18 @@ function mount_e01(){
 #Mount vmdk, vdi and qcow2 Image types as a network block device
 function mount_nbd(){
      [ 'which qemu-nbd' == "" ] && makered "qemu-utils not installed" && sleep 1 && exit
-     makered "Current Mount Status: "
-     echo $nbd_stat
-     echo $mount_stat
+     echo $nbd_stat |grep -q Active && makered "/dev/nbd1 is already in use!!....\nTry $0 -u if umount fails"
      [ -d "/dev/nbd1" ] && qemu-nbd -d /dev/nbd1 2>/dev/null && \
-     rmmod nbd 2>/dev/null && echo "Warning: unloading and reloading nbd"
+     rmmod nbd 2>/dev/null && makegreen "umounted of nbd suceeded!" 
+     [ -d "/dev/nbd1" ] && makered "Could not delete existing network block device! try ->  $0 -u" && exit
      modprobe nbd && echo "modprobe nbd"
-     makegreen "qemu-nbd -r -c /dev/nbd1 "${ipath}"" && \
      makegreen " Excecuting:  qemu-nbd -r -c /dev/nbd1 ${ipath}" && \
-     qemu-nbd -r -c /dev/nbd1 "${ipath}" && \
-     ls /dev/nbd1  && makegreen "Success!" || exit
+     qemu-nbd -r -c /dev/nbd1 "${ipath}" || exit
+     ls /dev/nbd1  && makegreen "nbd mount successful!"  
      image_src="/dev/nbd1"
-}
+     sfdisk -V  $image_src |grep "No errors" || makegreen "Waiting for remount..." && sleep 4 
+     }
+
 
 #Mount raw split images using affuse
 function mount_aff(){
@@ -175,7 +174,7 @@ function bit_locker_mount(){
       ls $mount_dir
       echo ""
       [ "$(ls -A $mount_dir)" ] && \
-      makegreen "Success!" || makered "Mount Failed! Try reboot or mount -o "norecovery""
+      makegreen "Success!" || makered "Mount Failed! Try $0 -u or reboot"
       echo ""
       [ "$(ls -A $mount_dir)" ] && [ "$fstype" == "ntfs" ] && mount_vss 
       exit
@@ -202,7 +201,7 @@ function mount_vss(){
 ######### UNMOUNT IMAGES ###################
 
 function umount_all(){
-      echo "Umount commands sent to drives mounted in /tmp and NBD unloaded" && echo ""
+      echo "Umount commands sent to all $0 drives mounts" && echo ""
       umount_vss
       [ "$(ls -A /mnt/bde 2>/dev/null)" ] && umount /mnt/bde -f -A || fusermount -uz /mnt/bde 2>/dev/null
       [ "$(ls -A /mnt/image_mount 2>/dev/null)" ] && umount /mnt/image_mount -f -A || fusermount -uz /mnt/image_mount 2>/dev/null
@@ -210,6 +209,7 @@ function umount_all(){
       ls /dev/nbd1p1 2>/dev/null && qemu-nbd -d /dev/nbd1 2>/dev/null
       lsmod |grep -i ^nbd && rmmod nbd 2>/dev/null && echo "Warning: unloading Network Block Device"
       mount_status
+      exit
 }
 
 #Identify and umount any previously mounted vss volumes
@@ -235,7 +235,7 @@ USAGE: ermount.sh [-h -s -u -b -rw]
 	OPTIONS:
            -h this help text
            -s ermount status
-           -u umount all disks mounted in /tmp and nbd
+           -u umount all disks from $0 mount points 
            -b mount bitlocker encrypted volume
            -rw mount image read write
 
@@ -261,7 +261,7 @@ mkdir -p /mnt/bde 2>/dev/null
 
 #Process Cli params and get mount status
 [ "${1}" == "-h" ] && get_help && exit 
-[ "${1}" == "-u" ] && umount_all && exit 
+[ "${1}" == "-u" ] && umount_all 
 [ "${1}" == "-s" ] && mount_status && exit
 mount_status
 [ "${1}" != "-rw" ] && ro_rw="ro" ||ro_rw="rw"
@@ -285,7 +285,8 @@ is_device=$(echo "$image_src" | grep -i "/dev/" |grep -vi "nbd1")
 [ "${is_device}" != "" ] && [ "${1}" == "-b" ] && bit_locker_mount
 
 # Set image offset if needed
-set_image_offset
+blkid $image_src |grep -e "PTTYPE=\|PTUUID=\|PARTUUID=" && set_image_offset
+# fdisk -l $image_src
 # Decrypt bitlocker if "-b" is specified
 [ "${1}" == "-b" ] && bit_locker_mount
 # mount image and detect any volume shadow copies
