@@ -2,7 +2,6 @@
 
 **ermount.sh**  
 Mount/umounts disk images (E01, vmdk, vhd(x), vdi, raw, iso, hfs+, qcow2 and vss) 
-Automation script mounts disks images using existing disk mount tools; qemu-nbd, ewfmount, affuse 
 
 
 USAGE: ermount.sh [-h -s -u -b -rw] <br>
