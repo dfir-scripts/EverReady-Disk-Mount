@@ -19,7 +19,10 @@ Warning: forcefully disconnects mounted drives and Network Block Devices<br>
 When in doubt reboot
 
 **Change Log:**<br>
-Oct 21, 2021
+Dec 26, 2021<br>
+  Updated nbd mount error checking and minor updates<br>
+  
+Oct 21, 2021<br>
   Added nbd mount if affuse fails
   Fixed issue that prevented entering partition starting block 
 
