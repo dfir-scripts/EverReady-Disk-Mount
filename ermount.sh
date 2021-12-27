@@ -229,7 +229,7 @@ function umount_vss(){
 get_help(){
 makegreen "EverReady Disk Mount"
 makegreen "Mount/umounts disk and disk images (E01, vmdk, vhd(x), vdi, raw, iso, hfs+, qcow2 and vss)"
-
+echo "
 USAGE: $0 [-h -s -u -b -rw]
 	OPTIONS:
            -h this help text
@@ -239,7 +239,8 @@ USAGE: $0 [-h -s -u -b -rw]
            -rw mount image read write
 
       Default mount point: /mnt/image_mount
-      Requires: ewf-tools, afflib3, qemu-utils, bdemount for bitlocker decryption
+      Minimum requirements: ewf-tools, afflib3, qemu-utils, libvshadow-utils, libbde-utils 
+      Works best with updated drivers from the gift repository (add-apt-repository ppa:gift/stable)
       Warning: forcefully disconnects mounted drives and Network Block Devices
       When in doubt reboot
 "
