@@ -284,7 +284,7 @@ is_device=$(echo "$image_src" | grep -i "/dev/" |grep -vi "nbd1")
 [ "${is_device}" != "" ] && [ "${1}" == "-b" ] && bit_locker_mount
 
 # Set image offset if needed
-partx -s "$image_src" 2>/dev/null |grep ^ "1" && set_image_offset
+partx -s "$image_src" 2>/dev/null |grep ^" 1" && set_image_offset
 # Decrypt bitlocker if "-b" is specified
 [ "${1}" == "-b" ] && bit_locker_mount
 # mount image and detect any volume shadow copies
