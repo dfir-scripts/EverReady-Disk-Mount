@@ -18,6 +18,9 @@ Warning: forcefully disconnects mounted drives and Network Block Devices<br>
 When in doubt reboot
 
 **Change Log:**<br>
+Mar 8, 2022<br>
+  Changed VHD(x) mount from aff to nbd and improved WSL compatibility
+  
 Dec 26, 2021<br>
   Updated nbd mount error checking and minor updates<br>
   
