@@ -1,7 +1,7 @@
 #! /bin/bash
 # EverReady disk mount
 # John Brown  forensic.studygroup@gmail.com
-# Mounts disks, disk images (E01,vmdk, vdi, Raw and bitlocker) in a linux evnironment using ewf_mount,qemu-ndb, affuse and bdemount 
+# Mounts disks, disk images (E01,vmdk, vdi, Raw and bitlocker) in a linux evnironment using ewf_mount,qemu-ndb, affuse and bdemount
 # WARNING:  Forcefully attempts to disconnect and remounts images and network block devices!
 # When in doubt, reboot
 # Creates directories in /mnt/ for different disk and amge types
@@ -53,8 +53,7 @@ mount_status(){
 ######### MOUNT PREFS ######################
 # User supplies input path of the image file or disk
 function image_source(){
-#makered "Enter Path and Image or Device to Mount"
-      read -e -p "Enter Image File or Device Path: " -i "" ipath
+      [ ! -f "${ipath}" ] && read -e -p "Enter Image File or Device Path: " -i "" ipath
       image_type=$(echo "$ipath"|awk -F . '{print toupper ($NF)}')
       [ ! -f "${ipath}" ] && [ ! -b "${ipath}" ] && makered "File or Device does not exist.." && sleep 2 && clear && exit
       image_name=$(echo $ipath|sed 's/\(.*\)\..*/\1\./')
@@ -100,7 +99,7 @@ function set_image_offset(){
 function mount_e01(){
       [ 'which ewfmount' == "" ] && makered "ewf-tools not installed" && sleep 1 && exit
       image_src="/mnt/raw/ewf1"
-      [ "$(ls -A /mnt/raw/)" ] && echo "Attempting to remount /mnt/raw/ " && umount /mnt/raw/ -f -A && makegreen "Sucessfully umounted previous E01" 
+      [ "$(ls -A /mnt/raw/)" ] && echo "Attempting to remount /mnt/raw/ " && umount /mnt/raw/ -f -A && makegreen "Sucessfully umounted previous E01"
       makegreen "Executing ewfmount command: ewfmount "${ipath}" /mnt/raw"
       ewfmount "${ipath}" /mnt/raw   && makegreen "Success!" && ipath="/mnt/raw/ewf1" || exit
 }
@@ -152,9 +151,9 @@ function bit_locker_mount(){
  function mount_image(){
       echo ""
       makegreen "Executing Mount Command....."
-      echo "Defaults is ntfs, see mount man pages for a complete list"
-      echo "Common filesystem types: ntfs, vfat, ext3, ext4, hfsplus, iso9660, udf"
-      read -e -p "File System Type:  " -i "ntfs" fstype
+      echo "Defaults file system type is ntfs, see mount man pages for a complete list"
+      echo "Other common filesystem types: vfat, ext3, ext4, hfsplus, iso9660, udf"
+      [ "${fstype}" ] || read -e -p "File System Type:  " -i "ntfs" fstype
       [ $fstype == "ntfs" ] && ntfs_support="show_sys_files,streams_interface=windows," && \
       umount_vss
       # Mount image to $mount_dir
@@ -228,9 +227,13 @@ get_help(){
 makegreen "EverReady Disk Mount"
 makegreen "Mount/umounts disk and disk images (E01, vmdk, vhd(x), vdi, raw, iso, hfs+, qcow2 and vss)"
 echo "
-USAGE: $0 [-h -s -u -b -rw]
-	OPTIONS:
-           -h this help text
+USAGE: $0 [-h -s -u -b -rw] -i <Image file or Disk> -m <Mount Point> -t <File System Type>
+
+	OPTIONAL:
+           -i Image file or disk source to mount
+           -m Mount point (Default /mnt/image_mount)
+           -t File System Type (Default NTFS)
+           -h This help text
            -s ermount status
            -u umount all disks from $0 mount points
            -b mount bitlocker encrypted volume
@@ -271,18 +274,32 @@ mkdir -p /mnt/raw 2>/dev/null
 mkdir -p /mnt/vss 2>/dev/null
 mkdir -p /mnt/bde 2>/dev/null
 
-#Process Cli params and get mount status
-[ "${1}" == "-h" ] && get_help && exit
-[ "${1}" == "-u" ] && umount_all
-[ "${1}" == "-s" ] && mount_status && exit
-mount_status
-[ "${1}" != "-rw" ] && ro_rw="ro" ||ro_rw="rw"
+
+while getopts "husri:m:t:" option;
+do
+    case $option in
+        h) get_help
+           exit;;
+        u) umount_all
+           exit;;
+        s) mount_status
+           exit;;
+        r) ro_rw="rw";;
+        i) ipath=${OPTARG};;
+        m) mount_dir=${OPTARG};;
+        t) fstype=${OPTARG};;
+    esac
+done
+
+[ "${ro_rw}" != "rw" ] && ro_rw="ro"
+
+#[ "${1}" != "-rw" ] && ro_rw="ro" ||ro_rw="rw"
 ##### [ "${1}" == "-b" ]
 
 # start mounting process and select source image and mount point
 makegreen "Use ERMount to mount a disk, disk image"
 image_source
-mount_point
+[ ! -d "${mount_dir}" ] && mount_point
 
 # Send to mounting function based on image type
 echo $image_type | grep -qie "E01$\|S01" && mount_e01
