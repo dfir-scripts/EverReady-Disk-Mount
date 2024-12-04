@@ -240,7 +240,7 @@ USAGE: $0 [-h -s -u -b -rw] -i <Image file or Disk> -m <Mount Point> -t <File Sy
            -rw mount image read write
 
       Default mount point: /mnt/image_mount
-      Minimum requirements: ewf-tools, afflib3, qemu-utils, libvshadow-utils, libbde-utils
+      Minimum requirements: ewf-tools, afflib-tools, qemu-utils, libvshadow-utils, libbde-utils, libfuse2
       Works best with updated drivers from the gift repository (add-apt-repository ppa:gift/stable)
       Warning: forcefully disconnects mounted drives and Network Block Devices
       When in doubt reboot
