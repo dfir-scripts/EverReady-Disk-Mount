@@ -156,6 +156,19 @@ function bit_locker_mount(){
       [ "${fstype}" ] || read -e -p "File System Type:  " -i "ntfs" fstype
       [ $fstype == "ntfs" ] && ntfs_support="show_sys_files,streams_interface=windows," && \
       umount_vss
+      
+      # Mount apfs
+      [ fstype == "apfs" ] && \
+         echo yes
+         if [ "$(ls -A /mnt/raw/)" ]; then
+           losetup -d /dev/loop42
+           losetup -r $offset /dev/loop42 $image_src
+         fi
+         apfs-fuse $image_src $mount_dir
+         ls $mount_dir && echo Success!
+         exit
+      fi   
+         
       # Mount image to $mount_dir
       echo $image_src | grep -qiv "/dev/sd" && loop="loop,"
       mount_options="-t $fstype -o $ro_rw,"
@@ -240,7 +253,7 @@ USAGE: $0 [-h -s -u -b -rw] -i <Image file or Disk> -m <Mount Point> -t <File Sy
            -rw mount image read write
 
       Default mount point: /mnt/image_mount
-      Minimum requirements: ewf-tools, afflib-tools, qemu-utils, libvshadow-utils, libbde-utils, libfuse2
+      Minimum requirements: ewf-tools, afflib3, qemu-utils, libvshadow-utils, libbde-utils
       Works best with updated drivers from the gift repository (add-apt-repository ppa:gift/stable)
       Warning: forcefully disconnects mounted drives and Network Block Devices
       When in doubt reboot
@@ -313,6 +326,7 @@ echo $image_type | grep -qie "AFF$" && mount_aff
 # If no image type detected, process as raw
 [ "$image_src" == "" ] && image_src="${ipath}"
 is_device=$(echo "$image_src" | grep -i "/dev/" |grep -vi "nbd1")
+[ "${is_device}" != "" ] && fdisk -l |grep $image_src && mount_image
 [ "${is_device}" != "" ] && [ "${1}" != "-b" ] && fdisk -l |grep $image_src && mount_image
 [ "${is_device}" != "" ] && [ "${1}" == "-b" ] && bit_locker_mount
 
