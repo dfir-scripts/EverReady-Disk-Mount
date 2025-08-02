@@ -149,7 +149,9 @@ function bit_locker_mount(){
 
 # Issue Mount command based on image type and prefs
  function mount_image(){
-      echo ""
+      echo "
+      USAGE: $0 [-h -s -u -b -rw] -i <Image file or Disk> -m <Mount Point> -t <File System Type> -o <image offset>
+"
       makegreen "Executing Mount Command....."
       echo "Defaults file system type is ntfs, see mount man pages for a complete list"
       echo "Other common filesystem types: vfat, ext3, ext4, hfsplus, iso9660, udf"
@@ -227,12 +229,13 @@ get_help(){
 makegreen "EverReady Disk Mount"
 makegreen "Mount/umounts disk and disk images (E01, vmdk, vhd(x), vdi, raw, iso, hfs+, qcow2 and vss)"
 echo "
-USAGE: $0 [-h -s -u -b -rw] -i <Image file or Disk> -m <Mount Point> -t <File System Type>
+USAGE: $0 [-h -s -u -b -rw] -i <Image file or Disk> -m <Mount Point> -t <File System Type> -o <image offset>
 
-	OPTIONAL:
+    OPTIONAL:
            -i Image file or disk source to mount
            -m Mount point (Default /mnt/image_mount)
            -t File System Type (Default NTFS)
+           -o File offset
            -h This help text
            -s ermount status
            -u umount all disks from $0 mount points
@@ -240,7 +243,7 @@ USAGE: $0 [-h -s -u -b -rw] -i <Image file or Disk> -m <Mount Point> -t <File Sy
            -rw mount image read write
 
       Default mount point: /mnt/image_mount
-      Minimum requirements: ewf-tools, afflib-tools, qemu-utils, libvshadow-utils, libbde-utils, libfuse2
+      Minimum requirements: libewf-tools libbde-tools libvshadow-tools afflib-tools, qemu-utils, libfuse2
       Works best with updated drivers from the gift repository (add-apt-repository ppa:gift/stable)
       Warning: forcefully disconnects mounted drives and Network Block Devices
       When in doubt reboot
@@ -253,15 +256,13 @@ USAGE: $0 [-h -s -u -b -rw] -i <Image file or Disk> -m <Mount Point> -t <File Sy
 clear
 #check root requirements
 [ `whoami` != 'root' ] && makered "Requires Root Access!" && sleep 1 && exit
-wsl=$(cat /proc/version |grep -i 'microsoft')
 
 # Setup mount directories and display physical devices
 mkdir -p /mnt/raw 2>/dev/null
 mkdir -p /mnt/vss 2>/dev/null
 mkdir -p /mnt/bde 2>/dev/null
 
-
-while getopts "husri:m:t:" option;
+while getopts "husri:m:t:o:" option;
 do
     case $option in
         h) get_help
@@ -274,13 +275,11 @@ do
         i) ipath=${OPTARG};;
         m) mount_dir=${OPTARG};;
         t) fstype=${OPTARG};;
+        o) off_set=${OPTARG};;
     esac
 done
 
 [ "${ro_rw}" != "rw" ] && ro_rw="ro"
-
-#[ "${1}" != "-rw" ] && ro_rw="ro" ||ro_rw="rw"
-##### [ "${1}" == "-b" ]
 
 # start mounting process and select source image and mount point
 makegreen "Use ERMount to mount a disk, disk image"
@@ -300,7 +299,8 @@ is_device=$(echo "$image_src" | grep -i "/dev/" |grep -vi "nbd1")
 [ "${is_device}" != "" ] && [ "${1}" == "-b" ] && bit_locker_mount
 
 # Set image offset if needed
-partx -s "$image_src" 2>/dev/null | grep ^" 1" && set_image_offset
+[ ! "${off_set}" ] && partx -s "$image_src" 2>/dev/null | grep ^" 1" && set_image_offset
+[ ! "${off_set}" ] || offset="offset=$off_set"
 # Decrypt bitlocker if "-b" is specified
 [ "${1}" == "-b" ] && bit_locker_mount
 # mount image and detect any volume shadow copies
