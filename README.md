@@ -3,7 +3,7 @@
 
 ## er2.sh: All-in-One Mounting Script
 
-`er2.sh` is a rewrite of the original `ermount.sh` that was created as a companion file for `siftgrab`.  Ermount uses prompts that steps through the mount process. `er2.sh` on the other hand is a more compact and utilitarian providing support `lvm` volumes and scripted mountings of multiple KAPE `vmdk` images with the goal of simplicity, function and speed.  `ermount.sh` remains to provide an easy method to learn and engage in the mount process.  It also has additional capabilities left out of `er2.sh`  (`vss` and `bitlocker` support). 
+`er2.sh` is a rewrite of the original `ermount.sh` that was created as a companion file for `siftgrab`.  Ermount uses prompts that steps through the mount process. `er2.sh` on the other hand is a more compact and utilitarian providing support for `lvm` volumes and scripted mountings of multiple KAPE `vmdk` images with the goal of simplicity, function and speed.  `ermount.sh` remains to provide an easy method to learn and engage in the mount process.  It also has additional capabilities left out of `er2.sh`  (`vss` and `bitlocker` support). 
 
 ### `er2.sh` Features
 
