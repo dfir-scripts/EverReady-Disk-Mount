@@ -191,9 +191,13 @@ mount_image() {
     fi
     # Support E01/EWF images
     if [[ "$image_path" =~ \.[Ee]01$ ]]; then
+        # Ensure FUSE allows root access (required for qemu-nbd)
+        if [ ! -f /etc/fuse.conf ] || ! grep -q "user_allow_other" /etc/fuse.conf 2>/dev/null; then
+            echo "user_allow_other" | sudo tee /etc/fuse.conf >/dev/null 2>&1
+        fi
         ewf_mount="/mnt/raw"
         mkdir -p "$ewf_mount"
-        if ! ewfmount "$image_path" "$ewf_mount" >/dev/null 2>&1; then
+        if ! ewfmount -X allow_root "$image_path" "$ewf_mount" >/dev/null 2>&1; then
             print_error "Failed to mount $image_path with ewfmount. Verify with 'ewfmount --help'."
             rm -rf "$ewf_mount" 2>/dev/null
             return 1
@@ -367,10 +371,10 @@ mount_image() {
         fi
     fi
     # Determine if we need -r flag for qemu-nbd
-    # FUSE-mounted images (split RAW, AFF) require -r flag due to FUSE permissions
+    # FUSE-mounted images (E01, split RAW, AFF) require -r flag due to FUSE permissions
     # Regular images should NOT use -r to allow LVM metadata access
     local qemu_nbd_opts=""
-    if [ -n "$splitraw_mount" ] || [ -n "$aff_mount" ]; then
+    if [ -n "$ewf_mount" ] || [ -n "$splitraw_mount" ] || [ -n "$aff_mount" ]; then
         qemu_nbd_opts="-r"
         echo "Using read-only mode for FUSE-mounted image..."
     fi
