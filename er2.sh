@@ -1,4 +1,12 @@
 #!/bin/bash
+
+# Check for root privileges
+if [ "$EUID" -ne 0 ]; then
+    echo -e "\033[31mError: This script must be run as root or with sudo.\033[0m"
+    echo "Usage: sudo $0 [options]"
+    exit 1
+fi
+
 # Colors for output
 RED='\033[31m'
 GREEN='\033[32m'
@@ -60,17 +68,59 @@ unmount_image() {
         fi
     fi
     
-    # Step 3: Detach the NBD device
-    if lsblk | grep -q "nbd1"; then
+    # Step 3: Detach the NBD device with retry logic
+    # Check if NBD device is actually attached (has non-zero size)
+    local nbd_size=$(cat /sys/block/nbd1/size 2>/dev/null || echo "0")
+    if [ "$nbd_size" != "0" ]; then
         echo "Detaching NBD device..."
-        if qemu-nbd -d "$nbd_device" >/dev/null 2>&1; then
-            print_success "Successfully detached $nbd_device."
-        else
-            print_error "Failed to detach $nbd_device. Check with 'lsblk | grep nbd1'."
-            # Try to show what's still using it
-            echo "Checking what's still active:"
-            lsblk "$nbd_device" 2>/dev/null || true
-            return 1
+        local detach_success=false
+        
+        # Try qemu-nbd -d up to 3 times
+        for attempt in 1 2 3; do
+            if qemu-nbd -d "$nbd_device" >/dev/null 2>&1; then
+                # Verify device is actually detached by checking size
+                sleep 0.5
+                local verify_size=$(cat /sys/block/nbd1/size 2>/dev/null || echo "0")
+                if [ "$verify_size" = "0" ]; then
+                    print_success "Successfully detached $nbd_device."
+                    detach_success=true
+                    break
+                else
+                    echo "Device still shows size $verify_size, not fully detached"
+                fi
+            else
+                if [ $attempt -lt 3 ]; then
+                    echo "Detach attempt $attempt failed, retrying..."
+                    sleep 1
+                fi
+            fi
+        done
+        
+        # If qemu-nbd -d failed, try aggressive rmmod approach
+        if [ "$detach_success" = false ]; then
+            print_error "qemu-nbd -d failed after 3 attempts. Trying aggressive cleanup..."
+            echo "Attempting to unload NBD kernel module (rmmod nbd)..."
+            
+            if rmmod nbd 2>/dev/null; then
+                print_success "Successfully unloaded NBD module."
+                # Verify module is unloaded
+                if ! lsmod | grep -q "^nbd "; then
+                    print_success "NBD module fully unloaded."
+                    # Reload the module for future use
+                    sleep 1
+                    modprobe nbd max_part=8 2>/dev/null || true
+                    detach_success=true
+                else
+                    print_error "NBD module still loaded after rmmod."
+                fi
+            else
+                print_error "Failed to detach $nbd_device even with rmmod."
+                print_error "NBD device may still be in use by another process."
+                echo "Checking what's still active:"
+                lsblk "$nbd_device" 2>/dev/null || true
+                echo "Try manually: sudo rmmod nbd && sudo modprobe nbd"
+                return 1
+            fi
         fi
     else
         echo "$nbd_device is not attached."
@@ -124,11 +174,12 @@ unmount_image() {
 mount_image() {
     local image_path="$1"
     local mount_point="$2"
-    local output_csv="$3"
+    local log_csv="$3"
     local filesystem="$4"
     local check_status_only="$5"
     local unmount_only="$6"
     local mount_mode="$7"
+    local manual_offset="$8"
     local retries=5
     local sleep_time=2
     local nbd_device="/dev/nbd1"
@@ -149,11 +200,32 @@ mount_image() {
         return $?
     fi
     if [ -z "$image_path" ]; then
-        print_error "Image path required (-i). Usage: './mount_vhd.sh -i image.vhd [-m /mnt/custom] [-f ntfs|ext4|vfat|exfat|hfsplus] [-o output.csv] [-r ro|rw] [-s] [-u]'"
+        echo ""
+        echo "Error: Image path required (-i)"
+        echo ""
+        SCRIPT_NAME=$(basename "$0")
+        echo "$SCRIPT_NAME mounts multiple image types"
+        echo "Usage: $SCRIPT_NAME -i <image> [-m mount/point] [-f filesystem] [-l log.csv] [-o offset] [-r ro|rw] [-s] [-u]"
+        echo ""
+        echo "Required:"
+        echo "  -i <image>         Disk image file or ISO"
+        echo ""
+        echo "Optional:"
+        echo "  -f <filesystem>    Filesystem type: ntfs, ext4, vfat, exfat, hfsplus"
+        echo "  -s                 Status - Check mount status only"
+        echo "  -u                 Unmount - Unmount image and cleanup"
+        echo "  -r <ro|rw>         Mount mode: ro (read-only) or rw (read-write)"
+        echo ""
+        echo "For full help: $SCRIPT_NAME -h"
+        echo ""
         return 1
     fi
+    # Check if image file exists
     if [ ! -f "$image_path" ]; then
-        print_error "Image file $image_path does not exist. Verify with 'ls -l $image_path'."
+        echo ""
+        echo "Error: Image file $image_path does not exist"
+        echo "Verify with: ls -l $image_path"
+        echo ""
         return 1
     fi
     if [ -n "$filesystem" ] && [[ "$filesystem" != "ntfs" && "$filesystem" != "ext4" && "$filesystem" != "vfat" && "$filesystem" != "exfat" && "$filesystem" != "hfsplus" ]]; then
@@ -166,6 +238,37 @@ mount_image() {
     fi
     [ -z "$filesystem" ] && filesystem="ntfs"
     [ -z "$mount_mode" ] && mount_mode="ro"
+    
+    # Pre-flight checks: Detect if mount points or NBD device are already in use
+    echo "Performing pre-flight checks..."
+    
+    # Check if /mnt/raw is already mounted
+    if mountpoint -q /mnt/raw 2>/dev/null; then
+        print_error "/mnt/raw is already mounted (from previous operation)."
+        print_error "Unmount first: sudo $0 -u -m $mount_point"
+        echo "Or check what's mounted: mount | grep /mnt/raw"
+        return 1
+    fi
+    
+    # Check if /mnt/aff is already mounted
+    if mountpoint -q /mnt/aff 2>/dev/null; then
+        print_error "/mnt/aff is already mounted (from previous operation)."
+        print_error "Unmount first: sudo $0 -u -m $mount_point"
+        echo "Or check what's mounted: mount | grep /mnt/aff"
+        return 1
+    fi
+    
+    # Check if NBD device is already in use
+    local nbd_check_size=$(cat /sys/block/nbd1/size 2>/dev/null || echo "0")
+    if [ "$nbd_check_size" != "0" ]; then
+        print_error "NBD device /dev/nbd1 is already in use (attached to another image)."
+        print_error "Unmount first: sudo $0 -u -m $mount_point"
+        echo "Or check status: lsblk | grep nbd1"
+        return 1
+    fi
+    
+    print_success "Pre-flight checks passed."
+    
     if [[ "$image_path" =~ \.ova$ ]]; then
         temp_dir="/tmp/ova_extracted_$$"
         mkdir -p "$temp_dir"
@@ -248,6 +351,26 @@ mount_image() {
         fi
         echo "Split RAW mounted at: $image_path"
     fi
+    # Support ISO images
+    if [[ "$image_path" =~ \.[Ii][Ss][Oo]$ ]]; then
+        echo "Detected ISO image: $image_path"
+        echo "Mounting ISO directly with loop device..."
+        # ISOs can be mounted directly - no NBD needed
+        mkdir -p "$mount_point"
+        if mount -o loop,ro "$image_path" "$mount_point" 2>/dev/null; then
+            print_success "Successfully mounted ISO to $mount_point"
+            echo ""
+            echo "Contents:"
+            ls "$mount_point"
+            echo ""
+            print_success "Success!!"
+            return 0
+        else
+            print_error "Failed to mount ISO $image_path"
+            echo "Verify ISO file: file $image_path"
+            return 1
+        fi
+    fi
     # Support AFF (Advanced Forensic Format) images
     if [[ "$image_path" =~ \.[Aa][Ff][Ff]$ ]]; then
         # Ensure FUSE allows root access (required for qemu-nbd)
@@ -286,17 +409,24 @@ mount_image() {
         fi
         echo "AFF mounted at: $image_path"
     fi
-    if [ ! -f "$image_path" ] || ! [[ "$image_path" =~ \.(vhd|vhdx|vdi|qcow|qcow2|vmdk|dd|img|raw)$ || "$image_path" =~ /ewf1$ || "$image_path" =~ /mnt/aff/ || "$image_path" =~ /mnt/raw/ ]]; then
-        print_error "Invalid disk image $image_path. Must be .vhd, .vhdx, .vdi, .qcow, .qcow2, .vmdk, .dd, .img, .raw, E01-mounted ewf1, AFF-mounted, or split RAW image."
+    # Validate file extension
+    if ! [[ "$image_path" =~ \.(vhd|vhdx|vdi|qcow|qcow2|vmdk|dd|img|raw|iso)$ || "$image_path" =~ /ewf1$ || "$image_path" =~ /mnt/aff/ || "$image_path" =~ /mnt/raw/ ]]; then
+        echo ""
+        echo "Error: Invalid disk image $image_path"
+        echo "Must be: .vhd, .vhdx, .vdi, .qcow, .qcow2, .vmdk, .dd, .img, .raw, .iso"
+        echo "Or: E01-mounted ewf1, AFF-mounted, or split RAW image"
+        echo ""
         [ -n "$temp_dir" ] && rm -rf "$temp_dir" 2>/dev/null
         [ -n "$ewf_mount" ] && { umount "$ewf_mount" 2>/dev/null; rm -rf "$ewf_mount" 2>/dev/null; }; [ -n "$aff_mount" ] && { fusermount -u "$aff_mount" 2>/dev/null; rm -rf "$aff_mount" 2>/dev/null; }; [ -n "$splitraw_mount" ] && { fusermount -u "$splitraw_mount" 2>/dev/null; rm -rf "$splitraw_mount" 2>/dev/null; }
         return 1
     fi
-    if [ -n "$output_csv" ] && [ ! -e "$output_csv" ]; then
-        echo "MountPoint,StartingSector,ByteOffset,Filesystem,MountCommand,PartitionSize,Success" > "$output_csv"
+    if [ -n "$log_csv" ] && [ ! -e "$log_csv" ]; then
+        echo "MountPoint,StartingSector,ByteOffset,Filesystem,MountCommand,PartitionSize,Success" > "$log_csv"
     fi
     if mountpoint -q "$mount_point"; then
-        print_error "$mount_point is already mounted. Unmount with './mount_vhd.sh -u' or 'sudo umount $mount_point'."
+        print_error "Mount point $mount_point is already in use."
+        print_error "Try unmounting first: sudo $0 -u -m $mount_point"
+        echo "Or check what's mounted: mount | grep $mount_point"
         [ -n "$temp_dir" ] && rm -rf "$temp_dir" 2>/dev/null
         [ -n "$ewf_mount" ] && { umount "$ewf_mount" 2>/dev/null; rm -rf "$ewf_mount" 2>/dev/null; }; [ -n "$aff_mount" ] && { fusermount -u "$aff_mount" 2>/dev/null; rm -rf "$aff_mount" 2>/dev/null; }; [ -n "$splitraw_mount" ] && { fusermount -u "$splitraw_mount" 2>/dev/null; rm -rf "$splitraw_mount" 2>/dev/null; }
         return 1
@@ -363,8 +493,11 @@ mount_image() {
         return 1
     fi
     if lsblk | grep -q "nbd1"; then
+        echo "NBD device $nbd_device is already in use. Attempting to detach..."
         if ! qemu-nbd -d "$nbd_device" >/dev/null 2>&1; then
-            print_error "Failed to detach $nbd_device. Check with 'lsblk | grep nbd1'."
+            print_error "Failed to detach $nbd_device - device is in use."
+            print_error "Try unmounting first: sudo $0 -u -m /mnt/image_mount"
+            echo "Or manually detach: sudo qemu-nbd -d $nbd_device"
             [ -n "$temp_dir" ] && rm -rf "$temp_dir" 2>/dev/null
             [ -n "$ewf_mount" ] && { umount "$ewf_mount" 2>/dev/null; rm -rf "$ewf_mount" 2>/dev/null; }; [ -n "$aff_mount" ] && { fusermount -u "$aff_mount" 2>/dev/null; rm -rf "$aff_mount" 2>/dev/null; }; [ -n "$splitraw_mount" ] && { fusermount -u "$splitraw_mount" 2>/dev/null; rm -rf "$splitraw_mount" 2>/dev/null; }
             return 1
@@ -381,7 +514,12 @@ mount_image() {
     
     # Attach image to NBD device
     if ! qemu-nbd $qemu_nbd_opts -c "$nbd_device" "$image_path"; then
-        print_error "Failed to attach $image_path to $nbd_device. Check qemu-nbd or file access with 'ls -l $image_path'."
+        print_error "Failed to attach image to NBD device."
+        print_error "Possible causes:"
+        echo "  1. NBD device $nbd_device is already in use - try: sudo $0 -u -m $mount_point"
+        echo "  2. File permissions issue - check: ls -l $image_path"
+        echo "  3. Invalid or corrupted image file"
+        echo "  4. NBD kernel module not loaded - try: sudo modprobe nbd"
         [ -n "$temp_dir" ] && rm -rf "$temp_dir" 2>/dev/null
         [ -n "$ewf_mount" ] && { umount "$ewf_mount" 2>/dev/null; rm -rf "$ewf_mount" 2>/dev/null; }; [ -n "$aff_mount" ] && { fusermount -u "$aff_mount" 2>/dev/null; rm -rf "$aff_mount" 2>/dev/null; }; [ -n "$splitraw_mount" ] && { fusermount -u "$splitraw_mount" 2>/dev/null; rm -rf "$splitraw_mount" 2>/dev/null; }
         return 1
@@ -402,18 +540,19 @@ mount_image() {
     
     # Scan for LVM physical volumes and activate volume groups
     if command -v pvscan >/dev/null 2>&1; then
-        # First, scan the NBD device and its partitions for PVs
-        echo "Scanning for LVM physical volumes..."
-        pvscan --cache "$nbd_device"* 2>&1 | grep -v "excluded: device is too small" || true
+        # First, scan the NBD device and its partitions for PVs (silently)
+        pvscan --cache "$nbd_device"* >/dev/null 2>&1 || true
         sleep 0.5
         
-        # Scan for volume groups
-        vgscan --mknodes 2>/dev/null || true
+        # Scan for volume groups (silently)
+        vgscan --mknodes >/dev/null 2>&1 || true
         sleep 0.5
         
         # Check if any volume groups were found
         local vgs_found=$(vgs --noheadings -o vg_name 2>/dev/null | tr -d ' ')
         if [ -n "$vgs_found" ]; then
+            # Only show messages if LVM is actually detected
+            echo "Scanning for LVM physical volumes..."
             print_success "LVM volume groups detected: $vgs_found"
             for vg in $vgs_found; do
                 echo "Activating volume group: $vg"
@@ -429,9 +568,8 @@ mount_image() {
             # Verify logical volumes are available
             echo "Checking for logical volumes..."
             lvs 2>/dev/null || true
-        else
-            echo "No LVM volume groups found on this device."
         fi
+        # If no LVM found, don't print anything (silent)
     fi
     local partitions
     partitions=$(lsblk -ln -o NAME | grep "^nbd1p" || true)
@@ -452,10 +590,10 @@ mount_image() {
     
     # Fallback: If lvs fails, parse lsblk output for LVM devices
     if [ -z "$lvm_volumes" ]; then
-        echo "Checking for LVM volumes via lsblk..."
-        # Look for lines with TYPE=lvm in lsblk output
+        # Look for lines with TYPE=lvm in lsblk output (silently)
         local lvm_from_lsblk=$(lsblk -ln -o NAME,TYPE "$nbd_device" | awk '$2 == "lvm" {print $1}' || true)
         if [ -n "$lvm_from_lsblk" ]; then
+            echo "Checking for LVM volumes via lsblk..."
             echo "Found LVM volumes in lsblk output:"
             for lv_name in $lvm_from_lsblk; do
                 # Convert name to device path
@@ -592,12 +730,12 @@ mount_image() {
                     echo
                     print_success "Success!!"
                     echo
-                    if [ -n "$output_csv" ]; then
+                    if [ -n "$log_csv" ]; then
                         local partition_size="Unknown"
                         if command -v fdisk >/dev/null 2>&1; then
                             partition_size=$(fdisk -l "$nbd_device" 2>/dev/null | grep "^$selected_part" | awk '{print $5}' | numfmt --to=iec-i --suffix=B --format="%.2f")
                         fi
-                        echo "$mount_point,partition,$selected_part,$mount_fstype,\"$mount_cmd\",${partition_size:-Unknown},Success" >> "$output_csv"
+                        echo "$mount_point,partition,$selected_part,$mount_fstype,\"$mount_cmd\",${partition_size:-Unknown},Success" >> "$log_csv"
                     fi
                     return 0
                 fi
@@ -677,18 +815,24 @@ mount_image() {
                     echo
                     print_success "Success!!"
                     echo
-                    if [ -n "$output_csv" ]; then
+                    if [ -n "$log_csv" ]; then
                         local partition_size="Unknown"
                         if command -v fdisk >/dev/null 2>&1; then
                             partition_size=$(fdisk -l "$nbd_device" 2>/dev/null | grep "^$part_device" | awk '{print $5}' | numfmt --to=iec-i --suffix=B --format="%.2f")
                         fi
-                        echo "$mount_point,partition,$part_device,$mount_fstype,\"$mount_cmd\",${partition_size:-Unknown},Success" >> "$output_csv"
+                        echo "$mount_point,partition,$part_device,$mount_fstype,\"$mount_cmd\",${partition_size:-Unknown},Success" >> "$log_csv"
                     fi
                     return 0
                 fi
                 umount "$mount_point" 2>/dev/null
             fi
-            print_error "Failed to mount $part_device. Verify filesystem with 'blkid $part_device'."
+            print_error "Failed to mount $part_device."
+            print_error "Possible causes:"
+            echo "  1. Unsupported or corrupted filesystem"
+            echo "  2. Device is already mounted elsewhere"
+            echo "  3. Insufficient permissions"
+            echo "Check filesystem type: blkid $part_device"
+            echo "Check if mounted: mount | grep $part_device"
             [ -n "$temp_dir" ] && rm -rf "$temp_dir" 2>/dev/null
             [ -n "$ewf_mount" ] && { umount "$ewf_mount" 2>/dev/null; rm -rf "$ewf_mount" 2>/dev/null; }; [ -n "$aff_mount" ] && { fusermount -u "$aff_mount" 2>/dev/null; rm -rf "$aff_mount" 2>/dev/null; }; [ -n "$splitraw_mount" ] && { fusermount -u "$splitraw_mount" 2>/dev/null; rm -rf "$splitraw_mount" 2>/dev/null; }
             return 1
@@ -756,7 +900,7 @@ mount_image() {
                     if command -v fdisk >/dev/null 2>&1; then
                         partition_size=$(fdisk -l "$nbd_device" 2>/dev/null | grep "^$nbd_device" | head -n 1 | awk '{print $5}' | numfmt --to=iec-i --suffix=B --format="%.2f")
                     fi
-                    echo "$mount_point,$offset_sectors,$byte_offset,$filesystem,\"$mount_cmd\",${partition_size:-Unknown},Success" >> "$output_csv"
+                    echo "$mount_point,$offset_sectors,$byte_offset,$filesystem,\"$mount_cmd\",${partition_size:-Unknown},Success" >> "$log_csv"
                 fi
                 return 0
             fi
@@ -770,45 +914,66 @@ mount_image() {
 }
 # Check for help flag first
 if [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
-    echo "Usage: $0 -i <image_file> [-m <mount_point>] [-f <filesystem>] [-o <output.csv>] [-r ro|rw] [-s] [-u]"
+    SCRIPT_NAME=$(basename "$0")
     echo ""
-    echo "Options:"
-    echo "  -i <image_file>    Disk image to mount (required for mounting)"
-    echo "  -m <mount_point>   Mount point directory (default: /mnt/image_mount)"
-    echo "  -f <filesystem>    Force filesystem type (ntfs, ext4, vfat, exfat, hfsplus)"
-    echo "  -o <output.csv>    Output mount details to CSV file"
-    echo "  -r <ro|rw>         Mount mode: ro (read-only) or rw (read-write) (default: ro)"
-    echo "  -s                 Check mount status only"
-    echo "  -u                 Unmount image"
+    echo "$SCRIPT_NAME - Mounts multiple disk image types"
+    echo ""
+    echo "Usage: $SCRIPT_NAME -i <image> [-m mount/point] [-f filesystem] [-l log.csv] [-o offset] [-r ro|rw] [-s] [-u]"
+    echo ""
+    echo "Required:"
+    echo "  -i <image>         Disk image file or ISO"
+    echo ""
+    echo "Optional:"
+    echo "  -m <mount/point>   Mount point directory (default: /mnt/image_mount)"
+    echo "  -f <filesystem>    Filesystem type: ntfs, ext4, vfat, exfat, hfsplus"
+    echo "  -l <log.csv>       Log mount details to CSV file"
+    echo "  -o <offset>        Manual byte offset for partition mounting"
+    echo "  -r <ro|rw>         Mount mode: ro (read-only, default) or rw (read-write)"
+    echo "  -s                 Status - Check mount status only"
+    echo "  -u                 Unmount - Unmount image and cleanup"
     echo "  -h, --help         Show this help message"
     echo ""
-    echo "Supported formats:"
-    echo "  Virtual Disks: VDI, VMDK, VHD, VHDX, QCOW, QCOW2"
-    echo "  Forensic Images: E01, AFF, Split RAW (.001, .002, ...)"
-    echo "  Raw Images: .raw, .dd, .img"
+    echo "Supported Formats:"
+    echo "  Virtual Disks:     VDI, VMDK, VHD, VHDX, QCOW, QCOW2"
+    echo "  Forensic Images:   E01, AFF, Split RAW (.001, .002, ...)"
+    echo "  Raw Images:        .raw, .dd, .img, .iso"
     echo ""
     echo "Examples:"
-    echo "  $0 -i disk.vmdk                    # Mount VMDK"
-    echo "  $0 -i evidence.E01 -m /mnt/case1   # Mount E01 to custom location"
-    echo "  $0 -i image.001                    # Mount FTK split RAW"
-    echo "  $0 -u -m /mnt/image_mount          # Unmount"
+    echo "  $SCRIPT_NAME -i disk.vmdk"
+    echo "  $SCRIPT_NAME -i evidence.E01 -m /mnt/case1 -l mount.csv"
+    echo "  $SCRIPT_NAME -i image.001 -f ntfs"
+    echo "  $SCRIPT_NAME -i ubuntu.iso"
+    echo "  $SCRIPT_NAME -u -m /mnt/image_mount"
+    echo ""
     exit 0
 fi
 
 check_status=false
 unmount=false
-while getopts "i:m:f:o:r:su" opt; do
+log_csv=""
+manual_offset=""
+while getopts "i:m:f:l:o:r:su" opt; do
     case $opt in
         i) image_path="$OPTARG" ;;
         m) mount_point="$OPTARG" ;;
         f) filesystem="$OPTARG" ;;
-        o) output_csv="$OPTARG" ;;
+        l) log_csv="$OPTARG" ;;
+        o) manual_offset="$OPTARG" ;;
         r) mount_mode="$OPTARG" ;;
         s) check_status=true ;;
         u) unmount=true ;;
-        \?) print_error "Invalid option. Usage: './mount_vhd.sh -i image.vhd [-m /mnt/custom] [-f ntfs|ext4|vfat|exfat|hfsplus] [-o output.csv] [-r ro|rw] [-s] [-u]'"; exit 1 ;;
+        \?) 
+            echo ""
+            echo "Error: Invalid option"
+            echo ""
+            SCRIPT_NAME=$(basename "$0")
+            echo "Usage: $SCRIPT_NAME -i <image> [-m mount/point] [-f filesystem] [-l log.csv] [-o offset] [-r ro|rw] [-s] [-u]"
+            echo "For full help: $SCRIPT_NAME -h"
+            echo ""
+            exit 1 
+            ;;
     esac
 done
 [ -z "$mount_point" ] && mount_point="/mnt/image_mount"
-mount_image "$image_path" "$mount_point" "$output_csv" "$filesystem" "$check_status" "$unmount" "$mount_mode"
+mount_image "$image_path" "$mount_point" "$log_csv" "$filesystem" "$check_status" "$unmount" "$mount_mode" "$manual_offset"
 exit $?
