@@ -53,7 +53,7 @@ To use all features, you may need to install the following tools:
 
 ```bash
 sudo apt update
-sudo apt install -y qemu-utils lvm2 libewf-tools afflib-tools hfsprogs exfatprogs dosfstools
+sudo apt install -y qemu-utils lvm2 ewf-tools afflib-tools hfsprogs exfatprogs dosfstools ntfs-3g parted
 ```
 
 ---
