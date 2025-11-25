@@ -572,7 +572,20 @@ mount_image() {
         # If no LVM found, don't print anything (silent)
     fi
     local partitions
-    partitions=$(lsblk -ln -o NAME | grep "^nbd1p" || true)
+    # Get all partitions, but filter out LVM2_member types (they can't be mounted directly)
+    local all_parts=$(lsblk -ln -o NAME | grep "^nbd1p" || true)
+    partitions=""
+    for part in $all_parts; do
+        local part_type=$(blkid -o value -s TYPE "/dev/$part" 2>/dev/null || echo "")
+        # Skip LVM2_member partitions - only their logical volumes can be mounted
+        if [ "$part_type" != "LVM2_member" ]; then
+            if [ -z "$partitions" ]; then
+                partitions="$part"
+            else
+                partitions="$partitions"$'\n'"$part"
+            fi
+        fi
+    done
     
     # Check if the device itself is a filesystem (unpartitioned disk)
     if [ -z "$partitions" ]; then
@@ -690,6 +703,50 @@ mount_image() {
                 fi
             fi
             echo "Will attempt to mount as: $mount_fstype"
+            
+            # Check if device is already mounted (e.g., by automount)
+            local existing_mount=$(mount | grep "^$selected_part " | awk '{print $3}')
+            if [ -n "$existing_mount" ]; then
+                echo ""
+                echo "Notice: $selected_part is already mounted at: $existing_mount"
+                echo ""
+                echo "Options:"
+                echo "  1) Use existing mount location: $existing_mount"
+                echo "  2) Unmount and remount to: $mount_point"
+                echo "  3) Cancel"
+                echo ""
+                read -r -p "Enter choice (1-3): " mount_choice
+                
+                case "$mount_choice" in
+                    1)
+                        echo ""
+                        print_success "Using existing mount at: $existing_mount"
+                        echo ""
+                        return 0
+                        ;;
+                    2)
+                        echo "Unmounting $selected_part from $existing_mount..."
+                        if umount "$selected_part" 2>/dev/null; then
+                            print_success "Successfully unmounted."
+                        else
+                            echo ""
+                            echo "Error: Failed to unmount $selected_part"
+                            echo "It may be in use. Try: lsof | grep $existing_mount"
+                            echo ""
+                            return 1
+                        fi
+                        ;;
+                    3)
+                        echo "Cancelled."
+                        return 1
+                        ;;
+                    *)
+                        echo "Invalid choice. Cancelled."
+                        return 1
+                        ;;
+                esac
+            fi
+            
             local mount_cmd
             if [ "$mount_fstype" = "ntfs" ]; then
                 mount_cmd="mount -t ntfs-3g -o $mount_mode,uid=$(id -u),gid=$(id -g),show_sys_files $selected_part $mount_point"
