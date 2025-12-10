@@ -14,6 +14,169 @@ NC='\033[0m'
 # Function to print in color
 print_error() { echo -e "${RED}$1${NC}"; }
 print_success() { echo -e "${GREEN}$1${NC}"; }
+# LVM cleanup function for er3.sh
+
+# Function to cleanup LVM volumes and /dev/mapper devices
+cleanup_lvm() {
+    local nbd_device="${1:-/dev/nbd1}"
+    local verbose="${2:-true}"
+    
+    if [ "$verbose" = "true" ]; then
+        echo "Checking for active LVM volumes to deactivate..."
+    fi
+    
+    # Check if LVM tools are available
+    if ! command -v vgchange >/dev/null 2>&1; then
+        return 0
+    fi
+    
+    # Step 1: Check for /dev/mapper devices related to this NBD device
+    local mapper_devices=$(ls -1 /dev/mapper/ 2>/dev/null | grep -v '^control$' || true)
+    
+    if [ -n "$mapper_devices" ]; then
+        if [ "$verbose" = "true" ]; then
+            echo "Found /dev/mapper devices:"
+            echo "$mapper_devices" | sed 's/^/  - \/dev\/mapper\//'
+        fi
+        
+        # Step 2: For each mapper device, check if it's associated with our NBD device
+        for mapper_dev in $mapper_devices; do
+            local mapper_path="/dev/mapper/$mapper_dev"
+            
+            # Check if this is an LVM device
+            if lvs "$mapper_path" >/dev/null 2>&1; then
+                # Get the volume group name
+                local vg_name=$(lvs --noheadings -o vg_name "$mapper_path" 2>/dev/null | tr -d ' ')
+                
+                if [ -n "$vg_name" ]; then
+                    # Check if this VG is on our NBD device
+                    local pv_devices=$(pvs --noheadings -o pv_name -S vg_name="$vg_name" 2>/dev/null | tr -d ' ')
+                    
+                    # Check if any PV is on the NBD device
+                    if echo "$pv_devices" | grep -q "^${nbd_device}"; then
+                        if [ "$verbose" = "true" ]; then
+                            echo "Deactivating LVM device: $mapper_path (VG: $vg_name)"
+                        fi
+                        
+                        # Deactivate this specific logical volume
+                        lvchange -an "$mapper_path" 2>/dev/null || true
+                    fi
+                fi
+            fi
+        done
+    fi
+    
+    # Step 3: Deactivate all volume groups on this NBD device
+    local vgs_on_nbd=$(pvs --noheadings -o vg_name -S "pv_name=~^${nbd_device}" 2>/dev/null | tr -d ' ' | sort -u || true)
+    
+    if [ -n "$vgs_on_nbd" ]; then
+        for vg in $vgs_on_nbd; do
+            if [ "$verbose" = "true" ]; then
+                echo "Deactivating volume group: $vg"
+            fi
+            
+            if vgchange -an "$vg" 2>/dev/null; then
+                if [ "$verbose" = "true" ]; then
+                    print_success "Deactivated volume group: $vg"
+                fi
+            else
+                if [ "$verbose" = "true" ]; then
+                    echo "Warning: Could not deactivate volume group: $vg"
+                fi
+            fi
+        done
+        
+        # Give LVM time to clean up
+        sleep 1
+    fi
+    
+    # Step 4: Final check - verify no mapper devices remain for this NBD
+    local remaining_mappers=$(ls -1 /dev/mapper/ 2>/dev/null | grep -v '^control$' || true)
+    
+    if [ -n "$remaining_mappers" ]; then
+        for mapper_dev in $remaining_mappers; do
+            local mapper_path="/dev/mapper/$mapper_dev"
+            
+            # Check if still associated with our NBD device
+            if lvs "$mapper_path" >/dev/null 2>&1; then
+                local pv_devices=$(pvs --noheadings -o pv_name -S "lv_path=$mapper_path" 2>/dev/null | tr -d ' ')
+                
+                if echo "$pv_devices" | grep -q "^${nbd_device}"; then
+                    if [ "$verbose" = "true" ]; then
+                        echo "Warning: Mapper device still active: $mapper_path"
+                        echo "Attempting force deactivation..."
+                    fi
+                    
+                    # Try force deactivation
+                    dmsetup remove "$mapper_dev" 2>/dev/null || true
+                fi
+            fi
+        done
+    fi
+    
+    # Step 5: Remove any stale PV cache entries
+    if command -v pvs >/dev/null 2>&1; then
+        pvs --cache 2>/dev/null || true
+    fi
+    
+    if [ "$verbose" = "true" ]; then
+        echo "LVM cleanup complete."
+    fi
+    
+    return 0
+}
+
+# Function to check if LVM cleanup is needed
+check_lvm_active() {
+    local nbd_device="${1:-/dev/nbd1}"
+    
+    # Quick check: any mapper devices exist?
+    local mapper_count=$(ls -1 /dev/mapper/ 2>/dev/null | grep -v '^control$' | wc -l)
+    
+    if [ "$mapper_count" -gt 0 ]; then
+        # Check if any are on our NBD device
+        if command -v pvs >/dev/null 2>&1; then
+            local vgs_on_nbd=$(pvs --noheadings -o vg_name -S "pv_name=~^${nbd_device}" 2>/dev/null | tr -d ' ' | sort -u || true)
+            
+            if [ -n "$vgs_on_nbd" ]; then
+                return 0  # LVM cleanup needed
+            fi
+        fi
+    fi
+    
+    return 1  # No LVM cleanup needed
+}
+
+# Smart cleanup wrapper function
+
+# Function to perform full cleanup with automatic LVM detection
+cleanup_and_exit() {
+    local nbd_device="${1:-/dev/nbd1}"
+    local temp_dir="$2"
+    local ewf_mount="$3"
+    local aff_mount="$4"
+    local splitraw_mount="$5"
+    local verbose="${6:-false}"
+    
+    # Check if LVM cleanup is needed (only if LVM tools are available)
+    if command -v vgchange >/dev/null 2>&1; then
+        if check_lvm_active "$nbd_device"; then
+            if [ "$verbose" = "true" ]; then
+                echo "Active LVM detected, cleaning up..."
+            fi
+            cleanup_lvm "$nbd_device" "$verbose"
+        fi
+    fi
+    
+    # Detach NBD device
+    qemu-nbd -d "$nbd_device" >/dev/null 2>&1
+    
+    # Clean up temporary directories
+    [ -n "$temp_dir" ] && rm -rf "$temp_dir" 2>/dev/null
+    [ -n "$ewf_mount" ] && { umount "$ewf_mount" 2>/dev/null; rm -rf "$ewf_mount" 2>/dev/null; }
+    [ -n "$aff_mount" ] && { fusermount -u "$aff_mount" 2>/dev/null; rm -rf "$aff_mount" 2>/dev/null; }
+    [ -n "$splitraw_mount" ] && { fusermount -u "$splitraw_mount" 2>/dev/null; rm -rf "$splitraw_mount" 2>/dev/null; }
+}
 # Function to check mount status
 check_mount_status() {
     local mount_point="$1"
@@ -314,19 +477,59 @@ mount_image() {
         fi
     fi
     # Support split RAW images (.001, .002, .003) created by FTK Imager
+    # Note: AFF files can also use .001 extension, so we need to verify the format
     if [[ "$image_path" =~ \.001$ ]]; then
-        # Ensure FUSE allows root access (required for qemu-nbd)
-        if [ ! -f /etc/fuse.conf ] || ! grep -q "user_allow_other" /etc/fuse.conf 2>/dev/null; then
-            echo "user_allow_other" | sudo tee /etc/fuse.conf >/dev/null 2>&1
-        fi
-        splitraw_mount="/mnt/raw"
-        mkdir -p "$splitraw_mount"
-        echo "Mounting split RAW image with affuse..."
-        if ! affuse -o allow_root "$image_path" "$splitraw_mount" >/dev/null 2>&1; then
-            print_error "Failed to mount split RAW $image_path with affuse. Verify with 'affuse --help'."
-            rm -rf "$splitraw_mount" 2>/dev/null
-            return 1
-        fi
+        # Check if this is actually an AFF file by examining magic bytes
+        local file_type=$(file -b "$image_path" 2>/dev/null || echo "unknown")
+        
+        if [[ "$file_type" =~ AFF|"Advanced Forensic Format" ]]; then
+            # This is an AFF file, not a split RAW - skip this section
+            # It will be handled by the .aff detection later (after renaming)
+            echo "Detected AFF format file with .001 extension (not split RAW)"
+            # AFF files with .001 extension need to be handled specially
+            # Treat it like a .aff file
+            if [ ! -f /etc/fuse.conf ] || ! grep -q "user_allow_other" /etc/fuse.conf 2>/dev/null; then
+                echo "user_allow_other" | sudo tee /etc/fuse.conf >/dev/null 2>&1
+            fi
+            aff_mount="/mnt/aff"
+            mkdir -p "$aff_mount"
+            echo "Mounting AFF image with affuse..."
+            if ! affuse -o allow_root "$image_path" "$aff_mount" >/dev/null 2>&1; then
+                print_error "Failed to mount AFF $image_path with affuse. Verify with 'affuse --help'."
+                rm -rf "$aff_mount" 2>/dev/null
+                return 1
+            fi
+            local original_aff_basename=$(basename "$image_path")
+            if [ -f "$aff_mount/${original_aff_basename}.raw" ]; then
+                image_path="$aff_mount/${original_aff_basename}.raw"
+            elif [ -f "$aff_mount/${original_aff_basename%.*}.raw" ]; then
+                image_path="$aff_mount/${original_aff_basename%.*}.raw"
+            elif [ -f "$aff_mount/$original_aff_basename" ]; then
+                image_path="$aff_mount/$original_aff_basename"
+            else
+                echo "Available files in $aff_mount:"
+                ls -la "$aff_mount/" 2>/dev/null || true
+                print_error "AFF raw image not found in $aff_mount. Check affuse setup."
+                fusermount -u "$aff_mount" 2>/dev/null
+                rm -rf "$aff_mount" 2>/dev/null
+                return 1
+            fi
+            echo "AFF mounted at: $image_path"
+        else
+            # This is a split RAW file (FTK Imager format)
+            echo "Detected split RAW image (FTK Imager format)"
+            # Ensure FUSE allows root access (required for qemu-nbd)
+            if [ ! -f /etc/fuse.conf ] || ! grep -q "user_allow_other" /etc/fuse.conf 2>/dev/null; then
+                echo "user_allow_other" | sudo tee /etc/fuse.conf >/dev/null 2>&1
+            fi
+            splitraw_mount="/mnt/raw"
+            mkdir -p "$splitraw_mount"
+            echo "Mounting split RAW image with affuse..."
+            if ! affuse -o allow_root "$image_path" "$splitraw_mount" >/dev/null 2>&1; then
+                print_error "Failed to mount split RAW $image_path with affuse. Verify with 'affuse --help'."
+                rm -rf "$splitraw_mount" 2>/dev/null
+                return 1
+            fi
         # affuse creates a raw file - it keeps the original basename with .raw appended
         # e.g., roberto.001 becomes roberto.001.raw
         local original_basename=$(basename "$image_path")
@@ -349,7 +552,8 @@ mount_image() {
             rm -rf "$splitraw_mount" 2>/dev/null
             return 1
         fi
-        echo "Split RAW mounted at: $image_path"
+            echo "Split RAW mounted at: $image_path"
+        fi
     fi
     # Support ISO images
     if [[ "$image_path" =~ \.[Ii][Ss][Oo]$ ]]; then
@@ -504,12 +708,27 @@ mount_image() {
         fi
     fi
     # Determine if we need -r flag for qemu-nbd
-    # FUSE-mounted images (E01, split RAW, AFF) require -r flag due to FUSE permissions
-    # Regular images should NOT use -r to allow LVM metadata access
+    # FUSE-mounted images (E01, split RAW, AFF) always require -r flag due to FUSE permissions
+    # For non-forensic virtual disks (VMDK, VDI, etc.), use -r by default for safety
+    # Raw images: no -r flag to allow LVM metadata writes (will warn user if LVM detected)
     local qemu_nbd_opts=""
+    local is_raw_image=false
+    local needs_lvm_remount=false
+    
     if [ -n "$ewf_mount" ] || [ -n "$splitraw_mount" ] || [ -n "$aff_mount" ]; then
+        # Forensic images always use read-only
+        qemu_nbd_opts="-r -f raw"
+        echo "Using read-only mode for forensic image..."
+    elif [[ "$image_path" =~ \.(dd|raw|img)$ ]]; then
+        # Raw images: don't use -r (allows LVM metadata writes)
+        # But explicitly specify format to avoid qemu-nbd warnings
+        qemu_nbd_opts="-f raw"
+        is_raw_image=true
+        echo "Detected raw disk image format..."
+    else
+        # Virtual disks (VMDK, VDI, QCOW2, etc.): use -r by default
         qemu_nbd_opts="-r"
-        echo "Using read-only mode for FUSE-mounted image..."
+        echo "Using read-only mode for virtual disk image..."
     fi
     
     # Attach image to NBD device
@@ -554,6 +773,116 @@ mount_image() {
             # Only show messages if LVM is actually detected
             echo "Scanning for LVM physical volumes..."
             print_success "LVM volume groups detected: $vgs_found"
+            
+            # Warn user about metadata writes for raw images
+            if [ "$is_raw_image" = true ]; then
+                echo ""
+                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                echo "⚠️  WARNING: LVM Metadata Modification Required"
+                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                echo ""
+                echo "Activating LVM volume groups requires writing metadata to the disk image."
+                echo "This will ALTER the image file and change its cryptographic hash."
+                echo ""
+                echo "FORENSIC IMPACT:"
+                echo "  • The image file's hash (MD5/SHA-1/SHA-256) will change"
+                echo "  • Chain of custody may be affected"
+                echo "  • Original evidence integrity cannot be verified after activation"
+                echo ""
+                echo "RECOMMENDED PRACTICE:"
+                echo "  • Only proceed if this is a verified working copy"
+                echo "  • Never use this on original evidence"
+                echo "  • Document this action in your forensic notes"
+                echo ""
+                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                echo ""
+                read -r -p "Do you want to proceed with LVM activation? (yes/no): " lvm_proceed
+                
+                if [[ ! "$lvm_proceed" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+                    echo ""
+                    print_error "LVM activation cancelled by user."
+                    echo "Cleaning up and exiting..."
+                    cleanup_lvm "$nbd_device" true
+                    qemu-nbd -d "$nbd_device" >/dev/null 2>&1
+                    [ -n "$temp_dir" ] && rm -rf "$temp_dir" 2>/dev/null
+                    [ -n "$ewf_mount" ] && { umount "$ewf_mount" 2>/dev/null; rm -rf "$ewf_mount" 2>/dev/null; }
+                    [ -n "$aff_mount" ] && { fusermount -u "$aff_mount" 2>/dev/null; rm -rf "$aff_mount" 2>/dev/null; }
+                    [ -n "$splitraw_mount" ] && { fusermount -u "$splitraw_mount" 2>/dev/null; rm -rf "$splitraw_mount" 2>/dev/null; }
+                    return 1
+                fi
+                echo ""
+                print_success "User confirmed. Proceeding with LVM activation..."
+                echo ""
+            # Warn user about read-only mount for virtual disks with LVM
+            # BUT: Skip this warning for forensic images (E01, AFF) - they can't be remounted writable
+            elif [ -n "$qemu_nbd_opts" ] && [ -z "$ewf_mount" ] && [ -z "$aff_mount" ] && [ -z "$splitraw_mount" ]; then
+                echo ""
+                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                echo "⚠️  WARNING: LVM Requires Write Access"
+                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                echo ""
+                echo "The image is currently mounted in read-only mode, but LVM activation"
+                echo "requires write access to update volume group metadata."
+                echo ""
+                echo "FORENSIC IMPACT:"
+                echo "  • The image file's hash will change after LVM activation"
+                echo "  • This is unavoidable for accessing LVM logical volumes"
+                echo ""
+                echo "To proceed, the image will be remounted WITHOUT read-only protection."
+                echo ""
+                echo "RECOMMENDED PRACTICE:"
+                echo "  • Only proceed if this is a verified working copy"
+                echo "  • Never use this on original evidence"
+                echo ""
+                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                echo ""
+                read -r -p "Do you want to remount without read-only and proceed? (yes/no): " lvm_proceed
+                
+                if [[ ! "$lvm_proceed" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+                    echo ""
+                    print_error "LVM activation cancelled by user."
+                    echo "Cleaning up and exiting..."
+                    cleanup_lvm "$nbd_device" true
+                    qemu-nbd -d "$nbd_device" >/dev/null 2>&1
+                    [ -n "$temp_dir" ] && rm -rf "$temp_dir" 2>/dev/null
+                    [ -n "$ewf_mount" ] && { umount "$ewf_mount" 2>/dev/null; rm -rf "$ewf_mount" 2>/dev/null; }
+                    [ -n "$aff_mount" ] && { fusermount -u "$aff_mount" 2>/dev/null; rm -rf "$aff_mount" 2>/dev/null; }
+                    [ -n "$splitraw_mount" ] && { fusermount -u "$splitraw_mount" 2>/dev/null; rm -rf "$splitraw_mount" 2>/dev/null; }
+                    return 1
+                fi
+                
+                echo ""
+                print_success "User confirmed. Remounting image without read-only..."
+                echo ""
+                
+                # Detach the current NBD device
+                if ! qemu-nbd -d "$nbd_device" >/dev/null 2>&1; then
+                    print_error "Failed to detach NBD device for remounting."
+                    return 1
+                fi
+                sleep 1
+                
+                # Reattach without -r flag (qemu-nbd will auto-detect format for virtual disks)
+                if ! qemu-nbd -c "$nbd_device" "$image_path"; then
+                    print_error "Failed to reattach image without read-only mode."
+                    return 1
+                fi
+                
+                if command -v partprobe >/dev/null 2>&1; then
+                    partprobe "$nbd_device" >/dev/null 2>&1 || true
+                fi
+                sleep 1
+                
+                # Re-scan for LVM after remounting
+                pvscan --cache "$nbd_device"* >/dev/null 2>&1 || true
+                sleep 0.5
+                vgscan --mknodes >/dev/null 2>&1 || true
+                sleep 0.5
+                vgs_found=$(vgs --noheadings -o vg_name 2>/dev/null | tr -d ' ')
+                echo ""
+            fi
+            
+            # Now activate the volume groups
             for vg in $vgs_found; do
                 echo "Activating volume group: $vg"
                 if vgchange -ay "$vg" 2>/dev/null; then
@@ -749,7 +1078,7 @@ mount_image() {
             
             local mount_cmd
             if [ "$mount_fstype" = "ntfs" ]; then
-                mount_cmd="mount -t ntfs-3g -o $mount_mode,uid=$(id -u),gid=$(id -g),show_sys_files $selected_part $mount_point"
+                mount_cmd="mount -t ntfs-3g -o $mount_mode,norecover,streams_interface=windows,uid=$(id -u),gid=$(id -g),show_sys_files $selected_part $mount_point"
             elif [ "$mount_fstype" = "vfat" ]; then
                 mount_cmd="mount -t vfat -o $mount_mode,uid=$(id -u),gid=$(id -g) $selected_part $mount_point"
             elif [ "$mount_fstype" = "exfat" ]; then
@@ -757,7 +1086,12 @@ mount_image() {
             elif [ "$mount_fstype" = "hfsplus" ]; then
                 mount_cmd="mount -t hfsplus -o $mount_mode,uid=$(id -u),gid=$(id -g) $selected_part $mount_point"
             else
-                mount_cmd="mount -t $mount_fstype -o $mount_mode $selected_part $mount_point"
+                # For ext2/ext3/ext4, add noload to prevent journal replay
+                if [[ "$mount_fstype" =~ ^ext[234]$ ]]; then
+                    mount_cmd="mount -t $mount_fstype -o $mount_mode,noload $selected_part $mount_point"
+                else
+                    mount_cmd="mount -t $mount_fstype -o $mount_mode $selected_part $mount_point"
+                fi
             fi
             set +e
             eval "$mount_cmd" >/dev/null 2>&1
@@ -834,7 +1168,7 @@ mount_image() {
             fi
             local mount_cmd
             if [ "$mount_fstype" = "ntfs" ]; then
-                mount_cmd="mount -t ntfs-3g -o $mount_mode,uid=$(id -u),gid=$(id -g),show_sys_files $part_device $mount_point"
+                mount_cmd="mount -t ntfs-3g -o $mount_mode,norecover,streams_interface=windows,uid=$(id -u),gid=$(id -g),show_sys_files $part_device $mount_point"
             elif [ "$mount_fstype" = "vfat" ]; then
                 mount_cmd="mount -t vfat -o $mount_mode,uid=$(id -u),gid=$(id -g) $part_device $mount_point"
             elif [ "$mount_fstype" = "exfat" ]; then
@@ -842,7 +1176,12 @@ mount_image() {
             elif [ "$mount_fstype" = "hfsplus" ]; then
                 mount_cmd="mount -t hfsplus -o $mount_mode,uid=$(id -u),gid=$(id -g) $part_device $mount_point"
             else
-                mount_cmd="mount -t $mount_fstype -o $mount_mode $part_device $mount_point"
+                # For ext2/ext3/ext4, add noload to prevent journal replay
+                if [[ "$mount_fstype" =~ ^ext[234]$ ]]; then
+                    mount_cmd="mount -t $mount_fstype -o $mount_mode,noload $part_device $mount_point"
+                else
+                    mount_cmd="mount -t $mount_fstype -o $mount_mode $part_device $mount_point"
+                fi
             fi
             set +e
             eval "$mount_cmd" >/dev/null 2>&1
@@ -914,7 +1253,7 @@ mount_image() {
         local byte_offset=$((offset_sectors * 512))
         local mount_cmd
         if [ "$filesystem" = "ntfs" ]; then
-            mount_cmd="mount -t ntfs-3g -o $mount_mode,uid=$(id -u),gid=$(id -g),show_sys_files,offset=$byte_offset $nbd_device $mount_point"
+            mount_cmd="mount -t ntfs-3g -o $mount_mode,norecover,streams_interface=windows,uid=$(id -u),gid=$(id -g),show_sys_files,offset=$byte_offset $nbd_device $mount_point"
         elif [ "$filesystem" = "vfat" ]; then
             mount_cmd="mount -t vfat -o $mount_mode,uid=$(id -u),gid=$(id -g),offset=$byte_offset $nbd_device $mount_point"
         elif [ "$filesystem" = "exfat" ]; then
@@ -922,7 +1261,12 @@ mount_image() {
         elif [ "$filesystem" = "hfsplus" ]; then
             mount_cmd="mount -t hfsplus -o $mount_mode,uid=$(id -u),gid=$(id -g),offset=$byte_offset $nbd_device $mount_point"
         else
-            mount_cmd="mount -t $filesystem -o $mount_mode,offset=$byte_offset $nbd_device $mount_point"
+            # For ext2/ext3/ext4, add noload to prevent journal replay
+            if [[ "$filesystem" =~ ^ext[234]$ ]]; then
+                mount_cmd="mount -t $filesystem -o $mount_mode,noload,offset=$byte_offset $nbd_device $mount_point"
+            else
+                mount_cmd="mount -t $filesystem -o $mount_mode,offset=$byte_offset $nbd_device $mount_point"
+            fi
         fi
         set +e
         eval "$mount_cmd" >/dev/null 2>&1
@@ -965,8 +1309,7 @@ mount_image() {
         umount "$mount_point" 2>/dev/null
     done
     print_error "Failed to mount $image_path. Verify filesystem or image format with 'file $image_path' or 'fdisk -l $image_path'."
-    [ -n "$temp_dir" ] && rm -rf "$temp_dir" 2>/dev/null
-    [ -n "$ewf_mount" ] && { umount "$ewf_mount" 2>/dev/null; rm -rf "$ewf_mount" 2>/dev/null; }; [ -n "$aff_mount" ] && { fusermount -u "$aff_mount" 2>/dev/null; rm -rf "$aff_mount" 2>/dev/null; }; [ -n "$splitraw_mount" ] && { fusermount -u "$splitraw_mount" 2>/dev/null; rm -rf "$splitraw_mount" 2>/dev/null; }
+    cleanup_and_exit "$nbd_device" "$temp_dir" "$ewf_mount" "$aff_mount" "$splitraw_mount" false
     return 1
 }
 # Check for help flag first
