@@ -176,6 +176,9 @@ cleanup_and_exit() {
     [ -n "$ewf_mount" ] && { umount "$ewf_mount" 2>/dev/null; rm -rf "$ewf_mount" 2>/dev/null; }
     [ -n "$aff_mount" ] && { fusermount -u "$aff_mount" 2>/dev/null; rm -rf "$aff_mount" 2>/dev/null; }
     [ -n "$splitraw_mount" ] && { fusermount -u "$splitraw_mount" 2>/dev/null; rm -rf "$splitraw_mount" 2>/dev/null; }
+    
+    # ALWAYS remove LVM filter at the end of cleanup
+    remove_lvm_filter
 }
 # Function to check mount status
 check_mount_status() {
@@ -184,6 +187,52 @@ check_mount_status() {
         print_success "$mount_point is mounted."
         df -h "$mount_point" || print_error "Warning: Unable to retrieve disk usage for $mount_point."
         return 0
+# Function to create temporary LVM filter to prevent auto-activation
+create_lvm_filter() {
+    local filter_file="/etc/lvm/lvm.conf.d/er2-temp-$$.conf"
+    
+    # Skip if already exists (shouldn't happen, but safe)
+    if [ -f "$filter_file" ]; then
+        return 0
+    fi
+    
+    # Check if LVM is installed
+    if ! command -v pvscan >/dev/null 2>&1; then
+        # LVM not installed, no filter needed
+        return 0
+    fi
+    
+    echo "Creating temporary LVM filter to prevent auto-activation..."
+    mkdir -p /etc/lvm/lvm.conf.d
+    
+    cat >"$filter_file" <<'EOF'
+# Temporary filter created by er2.sh
+# Prevents udev from auto-activating LVM on NBD devices
+# This file will be automatically removed when er2.sh exits
+devices {
+    global_filter = [ "r|/dev/nbd.*|", "a|.*|" ]
+}
+EOF
+    
+    # Refresh LVM to pick up new config
+    pvscan --cache >/dev/null 2>&1 || true
+    
+    echo "✓ LVM auto-activation blocked for NBD devices."
+}
+
+# Function to remove temporary LVM filter
+remove_lvm_filter() {
+    local filter_file="/etc/lvm/lvm.conf.d/er2-temp-$$.conf"
+    
+    if [ -f "$filter_file" ]; then
+        echo "Removing temporary LVM filter..."
+        rm -f "$filter_file"
+        # Refresh LVM to pick up config change
+        if command -v pvscan >/dev/null 2>&1; then
+            pvscan --cache >/dev/null 2>&1 || true
+        fi
+    fi
+}
     else
         print_error "$mount_point is not mounted."
         return 1
@@ -350,6 +399,11 @@ mount_image() {
     local ewf_mount=""
     local aff_mount=""
     local splitraw_mount=""
+    
+    # ALWAYS create LVM filter to prevent auto-activation (regardless of -l flag)
+    # This ensures LVM never activates without explicit user consent
+    create_lvm_filter
+    
     if ! modprobe nbd; then
         print_error "Failed to load NBD module. Verify with 'modinfo nbd'."
         return 1
@@ -402,6 +456,43 @@ mount_image() {
     fi
     [ -z "$filesystem" ] && filesystem="ntfs"
     [ -z "$mount_mode" ] && mount_mode="ro"
+    
+    # LVM mode confirmation screen
+    if [ "$lvm_mode" = true ]; then
+        echo ""
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "ℹ️  LVM MODE ENABLED - IMAGE WILL BE MODIFIED"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo ""
+        echo "You have enabled LVM support with the -l flag."
+        echo ""
+        echo "WHAT WILL HAPPEN:"
+        echo "  • Global LVM filter will be created (blocks auto-activation)"
+        echo "  • Image will be attached to NBD device"
+        echo "  • LVM will be scanned and detected"
+        echo "  • You will be prompted for confirmation before activation"
+        echo "  • LVM metadata WILL BE MODIFIED upon activation (unavoidable)"
+        echo "  • The cryptographic hash (MD5/SHA-1/SHA-256) WILL CHANGE"
+        echo ""
+        echo "PROTECTION:"
+        echo "  • Auto-activation is BLOCKED (requires your explicit confirmation)"
+        echo "  • Filesystem metadata protected (noload/norecover options)"
+        echo "  • File data protected (read-only mount)"
+        echo "  • Only LVM metadata will be modified (unavoidable)"
+        echo ""
+        echo "RECOMMENDATION:"
+        echo "  • Only use -l flag on WORKING COPIES, not original evidence"
+        echo "  • Ensure chain of custody is documented"
+        echo "  • Consider using hardware write-blockers for originals"
+        echo ""
+        echo "Image to mount: $image_path"
+        echo "Mount point: $mount_point"
+        echo ""
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo ""
+        echo "Proceeding with LVM-enabled mount..."
+        echo ""
+    fi
     
     # Pre-flight checks: Detect if mount points or NBD device are already in use
     echo "Performing pre-flight checks..."
@@ -818,15 +909,15 @@ mount_image() {
     # Scan for LVM physical volumes and activate volume groups
     if command -v pvscan >/dev/null 2>&1; then
         # First, scan the NBD device and its partitions for PVs (silently)
-        pvscan --cache "$nbd_device"* >/dev/null 2>&1 || true
+        pvscan --cache --config 'devices { filter=[ "a|/dev/nbd.*|", "r|.*|" ] }' "$nbd_device"* >/dev/null 2>&1 || true
         sleep 0.5
         
         # Scan for volume groups (silently)
-        vgscan --mknodes >/dev/null 2>&1 || true
+        vgscan --mknodes --config 'devices { filter=[ "a|/dev/nbd.*|", "r|.*|" ] }' >/dev/null 2>&1 || true
         sleep 0.5
         
         # Check if any volume groups were found
-        local vgs_found=$(vgs --noheadings -o vg_name 2>/dev/null | tr -d ' ')
+        local vgs_found=$(vgs --noheadings -o vg_name --config 'devices { filter=[ "a|/dev/nbd.*|", "r|.*|" ] }' 2>/dev/null | tr -d ' ')
         if [ -n "$vgs_found" ]; then
             # Only show messages if LVM is actually detected
             echo "Scanning for LVM physical volumes..."
@@ -861,8 +952,9 @@ mount_image() {
             fi
             
             # LVM mode enabled, proceed with warnings
-            # Warn user about metadata writes for raw images and virtual disks
+            # Provide accurate container-specific warnings
             if [ "$is_raw_image" = true ]; then
+                # Raw images - CAN be modified
                 echo ""
                 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                 echo "⚠️  WARNING: LVM Metadata Modification Required"
@@ -871,10 +963,20 @@ mount_image() {
                 echo "Activating LVM volume groups requires writing metadata to the disk image."
                 echo "This will ALTER the image file and change its cryptographic hash."
                 echo ""
+                echo "WHAT GETS MODIFIED:"
+                echo "  • LVM metadata (activation state, timestamps, counters)"
+                echo "  • This is unavoidable - required for LVM to function"
+                echo "  • Filesystem metadata will be protected (noload/norecover options)"
+                echo ""
                 echo "FORENSIC IMPACT:"
                 echo "  • The image file's hash (MD5/SHA-1/SHA-256) will change"
                 echo "  • Chain of custody may be affected"
                 echo "  • Original evidence integrity cannot be verified after activation"
+                echo ""
+                echo "AUTO-ACTIVATION PREVENTION:"
+                echo "  • Global LVM filter is active (prevents udev auto-activation)"
+                echo "  • LVM will ONLY activate if you confirm below"
+                echo "  • Without confirmation, LVM remains inactive and image unchanged"
                 echo ""
                 echo "RECOMMENDED PRACTICE:"
                 echo "  • Only proceed if this is a verified working copy"
@@ -936,7 +1038,7 @@ mount_image() {
             # Now activate the volume groups
             for vg in $vgs_found; do
                 echo "Activating volume group: $vg"
-                if vgchange -ay "$vg" 2>/dev/null; then
+                if vgchange -ay --config 'devices { filter=[ "a|/dev/nbd.*|", "r|.*|" ] }' "$vg" 2>/dev/null; then
                     print_success "Activated volume group: $vg"
                 else
                     print_warning "Could not activate volume group: $vg"
@@ -1049,8 +1151,7 @@ mount_image() {
             read -r choice
             if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "$part_count" ]; then
                 print_error "Invalid choice. Please select a number between 1 and $part_count."
-                [ -n "$temp_dir" ] && rm -rf "$temp_dir" 2>/dev/null
-                [ -n "$ewf_mount" ] && { umount "$ewf_mount" 2>/dev/null; rm -rf "$ewf_mount" 2>/dev/null; }; [ -n "$aff_mount" ] && { fusermount -u "$aff_mount" 2>/dev/null; rm -rf "$aff_mount" 2>/dev/null; }; [ -n "$splitraw_mount" ] && { fusermount -u "$splitraw_mount" 2>/dev/null; rm -rf "$splitraw_mount" 2>/dev/null; }
+                cleanup_and_exit "$nbd_device" "$temp_dir" "$ewf_mount" "$aff_mount" "$splitraw_mount" false
                 return 1
             fi
             local selected_part="${part_array[$choice]}"
@@ -1113,15 +1214,18 @@ mount_image() {
                             echo "Error: Failed to unmount $selected_part"
                             echo "It may be in use. Try: lsof | grep $existing_mount"
                             echo ""
+                            cleanup_and_exit "$nbd_device" "$temp_dir" "$ewf_mount" "$aff_mount" "$splitraw_mount" false
                             return 1
                         fi
                         ;;
                     3)
                         echo "Cancelled."
+                        cleanup_and_exit "$nbd_device" "$temp_dir" "$ewf_mount" "$aff_mount" "$splitraw_mount" false
                         return 1
                         ;;
                     *)
                         echo "Invalid choice. Cancelled."
+                        cleanup_and_exit "$nbd_device" "$temp_dir" "$ewf_mount" "$aff_mount" "$splitraw_mount" false
                         return 1
                         ;;
                 esac
@@ -1165,8 +1269,7 @@ mount_image() {
                     ls "$mount_point" || {
                         print_error "Failed to list contents of $mount_point: possible I/O error. Check with 'ls $mount_point' or 'dmesg'."
                         umount "$mount_point" 2>/dev/null
-                        [ -n "$temp_dir" ] && rm -rf "$temp_dir" 2>/dev/null
-                        [ -n "$ewf_mount" ] && { umount "$ewf_mount" 2>/dev/null; rm -rf "$ewf_mount" 2>/dev/null; }; [ -n "$aff_mount" ] && { fusermount -u "$aff_mount" 2>/dev/null; rm -rf "$aff_mount" 2>/dev/null; }; [ -n "$splitraw_mount" ] && { fusermount -u "$splitraw_mount" 2>/dev/null; rm -rf "$splitraw_mount" 2>/dev/null; }
+                        cleanup_and_exit "$nbd_device" "$temp_dir" "$ewf_mount" "$aff_mount" "$splitraw_mount" false
                         return 1
                     }
                     echo
@@ -1198,8 +1301,7 @@ mount_image() {
             dmesg | tail -10
             echo ""
             print_error "Failed to mount $selected_part. Check diagnostics above."
-            [ -n "$temp_dir" ] && rm -rf "$temp_dir" 2>/dev/null
-            [ -n "$ewf_mount" ] && { umount "$ewf_mount" 2>/dev/null; rm -rf "$ewf_mount" 2>/dev/null; }; [ -n "$aff_mount" ] && { fusermount -u "$aff_mount" 2>/dev/null; rm -rf "$aff_mount" 2>/dev/null; }; [ -n "$splitraw_mount" ] && { fusermount -u "$splitraw_mount" 2>/dev/null; rm -rf "$splitraw_mount" 2>/dev/null; }
+            cleanup_and_exit "$nbd_device" "$temp_dir" "$ewf_mount" "$aff_mount" "$splitraw_mount" false
             return 1
         else
             local part_device="/dev/$partitions"
@@ -1255,8 +1357,7 @@ mount_image() {
                     ls "$mount_point" || {
                         print_error "Failed to list contents of $mount_point: possible I/O error. Check with 'ls $mount_point' or 'dmesg'."
                         umount "$mount_point" 2>/dev/null
-                        [ -n "$temp_dir" ] && rm -rf "$temp_dir" 2>/dev/null
-                        [ -n "$ewf_mount" ] && { umount "$ewf_mount" 2>/dev/null; rm -rf "$ewf_mount" 2>/dev/null; }; [ -n "$aff_mount" ] && { fusermount -u "$aff_mount" 2>/dev/null; rm -rf "$aff_mount" 2>/dev/null; }; [ -n "$splitraw_mount" ] && { fusermount -u "$splitraw_mount" 2>/dev/null; rm -rf "$splitraw_mount" 2>/dev/null; }
+                        cleanup_and_exit "$nbd_device" "$temp_dir" "$ewf_mount" "$aff_mount" "$splitraw_mount" false
                         return 1
                     }
                     echo
@@ -1280,8 +1381,7 @@ mount_image() {
             echo "  3. Insufficient permissions"
             echo "Check filesystem type: blkid $part_device"
             echo "Check if mounted: mount | grep $part_device"
-            [ -n "$temp_dir" ] && rm -rf "$temp_dir" 2>/dev/null
-            [ -n "$ewf_mount" ] && { umount "$ewf_mount" 2>/dev/null; rm -rf "$ewf_mount" 2>/dev/null; }; [ -n "$aff_mount" ] && { fusermount -u "$aff_mount" 2>/dev/null; rm -rf "$aff_mount" 2>/dev/null; }; [ -n "$splitraw_mount" ] && { fusermount -u "$splitraw_mount" 2>/dev/null; rm -rf "$splitraw_mount" 2>/dev/null; }
+            cleanup_and_exit "$nbd_device" "$temp_dir" "$ewf_mount" "$aff_mount" "$splitraw_mount" false
             return 1
         fi
     fi
@@ -1293,8 +1393,7 @@ mount_image() {
         fi
         if [ "$i" -eq "$retries" ]; then
             print_error "Failed to clear existing mounts for $mount_point after $retries attempts. Check with 'mountpoint $mount_point' or 'lsof $mount_point'."
-            [ -n "$temp_dir" ] && rm -rf "$temp_dir" 2>/dev/null
-            [ -n "$ewf_mount" ] && { umount "$ewf_mount" 2>/dev/null; rm -rf "$ewf_mount" 2>/dev/null; }; [ -n "$aff_mount" ] && { fusermount -u "$aff_mount" 2>/dev/null; rm -rf "$aff_mount" 2>/dev/null; }; [ -n "$splitraw_mount" ] && { fusermount -u "$splitraw_mount" 2>/dev/null; rm -rf "$splitraw_mount" 2>/dev/null; }
+            cleanup_and_exit "$nbd_device" "$temp_dir" "$ewf_mount" "$aff_mount" "$splitraw_mount" false
             return 1
         fi
         sleep $sleep_time
@@ -1340,8 +1439,7 @@ mount_image() {
                 ls "$mount_point" || {
                     print_error "Failed to list contents of $mount_point: possible I/O error. Check with 'ls $mount_point' or 'dmesg'."
                     umount "$mount_point" 2>/dev/null
-                    [ -n "$temp_dir" ] && rm -rf "$temp_dir" 2>/dev/null
-                    [ -n "$ewf_mount" ] && { umount "$ewf_mount" 2>/dev/null; rm -rf "$ewf_mount" 2>/dev/null; }; [ -n "$aff_mount" ] && { fusermount -u "$aff_mount" 2>/dev/null; rm -rf "$aff_mount" 2>/dev/null; }; [ -n "$splitraw_mount" ] && { fusermount -u "$splitraw_mount" 2>/dev/null; rm -rf "$splitraw_mount" 2>/dev/null; }
+                    cleanup_and_exit "$nbd_device" "$temp_dir" "$ewf_mount" "$aff_mount" "$splitraw_mount" false
                     return 1
                 }
                 echo
