@@ -459,39 +459,7 @@ mount_image() {
     
     # LVM mode confirmation screen
     if [ "$lvm_mode" = true ]; then
-        echo ""
-        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        echo "ℹ️  LVM MODE ENABLED - IMAGE WILL BE MODIFIED"
-        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        echo ""
-        echo "You have enabled LVM support with the -l flag."
-        echo ""
-        echo "WHAT WILL HAPPEN:"
-        echo "  • Global LVM filter will be created (blocks auto-activation)"
-        echo "  • Image will be attached to NBD device"
-        echo "  • LVM will be scanned and detected"
-        echo "  • You will be prompted for confirmation before activation"
-        echo "  • LVM metadata WILL BE MODIFIED upon activation (unavoidable)"
-        echo "  • The cryptographic hash (MD5/SHA-1/SHA-256) WILL CHANGE"
-        echo ""
-        echo "PROTECTION:"
-        echo "  • Auto-activation is BLOCKED (requires your explicit confirmation)"
-        echo "  • Filesystem metadata protected (noload/norecover options)"
-        echo "  • File data protected (read-only mount)"
-        echo "  • Only LVM metadata will be modified (unavoidable)"
-        echo ""
-        echo "RECOMMENDATION:"
-        echo "  • Only use -l flag on WORKING COPIES, not original evidence"
-        echo "  • Ensure chain of custody is documented"
-        echo "  • Consider using hardware write-blockers for originals"
-        echo ""
-        echo "Image to mount: $image_path"
-        echo "Mount point: $mount_point"
-        echo ""
-        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        echo ""
-        echo "Proceeding with LVM-enabled mount..."
-        echo ""
+        echo "ℹ️  LVM MODE ENABLED"
     fi
     
     # Pre-flight checks: Detect if mount points or NBD device are already in use
@@ -571,9 +539,9 @@ mount_image() {
             return 1
         fi
     fi
-    # Support split RAW images (.001, .002, .003) created by FTK Imager
+    # Support split RAW images (.000, .001, .002, .003) created by FTK Imager
     # Note: AFF files can also use .001 extension, so we need to verify the format
-    if [[ "$image_path_lower" =~ \.001$ ]]; then
+    if [[ "$image_path_lower" =~ \.(000|001)$ ]]; then
         # Check if this is actually an AFF file by examining magic bytes
         local file_type=$(file -b "$image_path" 2>/dev/null || echo "unknown")
         
@@ -997,37 +965,6 @@ mount_image() {
                     [ -n "$ewf_mount" ] && { umount "$ewf_mount" 2>/dev/null; rm -rf "$ewf_mount" 2>/dev/null; }
                     [ -n "$aff_mount" ] && { fusermount -u "$aff_mount" 2>/dev/null; rm -rf "$aff_mount" 2>/dev/null; }
                     [ -n "$splitraw_mount" ] && { fusermount -u "$splitraw_mount" 2>/dev/null; rm -rf "$splitraw_mount" 2>/dev/null; }
-                    return 1
-                fi
-                echo ""
-                print_success "User confirmed. Proceeding with LVM activation..."
-                echo ""
-            # Warn user for virtual disks with LVM (less severe than raw images)
-            elif [ -z "$ewf_mount" ] && [ -z "$aff_mount" ] && [ -z "$splitraw_mount" ]; then
-                echo ""
-                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                echo "ℹ️  INFO: LVM Metadata Modification"
-                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                echo ""
-                echo "Activating LVM volume groups will write metadata to the virtual disk."
-                echo "This is normal for virtual disk images (VMDK, VHDX, VDI, QCOW2)."
-                echo ""
-                echo "NOTE:"
-                echo "  • Virtual disk metadata will be updated"
-                echo "  • This is expected behavior for working copies"
-                echo "  • The virtual disk file will be modified"
-                echo ""
-                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                echo ""
-                read -r -p "Do you want to proceed with LVM activation? (yes/no): " lvm_proceed
-                
-                if [[ ! "$lvm_proceed" =~ ^[Yy]([Ee][Ss])?$ ]]; then
-                    echo ""
-                    print_error "LVM activation cancelled by user."
-                    echo "Cleaning up and exiting..."
-                    cleanup_lvm "$nbd_device" true
-                    qemu-nbd -d "$nbd_device" >/dev/null 2>&1
-                    [ -n "$temp_dir" ] && rm -rf "$temp_dir" 2>/dev/null
                     return 1
                 fi
                 echo ""
