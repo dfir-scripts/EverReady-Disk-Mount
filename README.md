@@ -8,7 +8,7 @@
 
 | Feature | Description |
 | --- | --- |
-| **Universal Format Support** | Natively handles VDI, VMDK, VHD/VHDX, QCOW2, E01, AFF, split RAW (`.001`), ISOs, and more. |
+| **Multiple Image Formats Supported** | Natively handles VDI, VMDK, VHD/VHDX, QCOW2, E01, AFF, split RAW (`.001`), ISOs, and more. |
 | **Always Read-Only** | All images are mounted read-only using `qemu-nbd -r` to guarantee forensic integrity. |
 | **LVM Support** | *Use the **`-l`** flag to scan and activate LVM volumes. LVM is activated in read-only mode—no writes to the image.* |
 | **Case-Insensitive Extensions** | Works with any case combination (`.VHDX`, `.VhDx`, `.vhdx` all work). |
@@ -69,11 +69,11 @@ Examples:
 
 **All images are mounted strictly read-only.** The script uses `qemu-nbd -r` for all image types, which guarantees that the underlying image file is never modified. This ensures:
 
-- **Forensic integrity** is always preserved
+- **Forensic integrity** is preserved
 
 - **Cryptographic hashes** (MD5/SHA-1/SHA-256) remain unchanged
 
-- **Chain of custody** is maintained for legal proceedings
+- **Chain of custody** is maintained
 
 #### LVM Support
 
