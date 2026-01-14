@@ -7,13 +7,13 @@
 ### `er2.sh` Features
 
 | Feature | Description |
-|:--------|:------------|
+| --- | --- |
 | **Universal Format Support** | Natively handles VDI, VMDK, VHD/VHDX, QCOW2, E01, AFF, split RAW (`.001`), ISOs, and more. |
-| **Safe Read-Only by Default** | All images are mounted read-only by default to prevent accidental modifications. |
-| **Explicit LVM Support** | Use the `-l` flag to enable LVM support when needed. LVM activation requires write access and will modify the image. |
+| **Always Read-Only** | All images are mounted read-only using `qemu-nbd -r` to guarantee forensic integrity. |
+| **LVM Support** | *Use the **`-l`** flag to scan and activate LVM volumes. LVM is activated in read-only mode—no writes to the image.* |
 | **Case-Insensitive Extensions** | Works with any case combination (`.VHDX`, `.VhDx`, `.vhdx` all work). |
 | **Flat VMDK Support** | Automatically detects and handles flat VMDK files (descriptor + `-flat.vmdk` data file). |
-| **Forensically Sound Mounting** | Uses `noload` for ext4 and `norecover` for NTFS to prevent journal replay that would modify the image. |
+| **Forensically Sound Mounting** | Uses `noload` for ext4 and `norecover` for NTFS to prevent journal replay. |
 | **Comprehensive LVM Cleanup** | Properly deactivates LVM volumes and cleans up `/dev/mapper` devices on unmount or error. |
 | **Unpartitioned Disk Handling** | Intelligently mounts disks that are formatted as a single filesystem without a partition table. |
 | **Smart Forensic Mounting** | Uses the correct FUSE tools (`ewfmount`, `affuse`) with proper permissions (`allow_root`) for forensic images. |
@@ -24,7 +24,7 @@
 ### `er2.sh` Usage
 
 ```shell
-Usage: er2.sh -i <image> [-m mount/point] [-f filesystem] [-l] [-o offset] [-r ro|rw] [-s] [-u]
+Usage: er2.sh -i <image> [-m mount/point] [-f filesystem] [-l] [-o offset] [-s] [-u]
 
 Required:
   -i <image>         Disk image file or ISO
@@ -32,9 +32,8 @@ Required:
 Optional:
   -m <mount/point>   Mount point directory (default: /mnt/image_mount)
   -f <filesystem>    Filesystem type: ntfs, ext4, vfat, exfat, hfsplus
-  -l                 Enable LVM support (allows image modification)
+  -l                 Enable LVM support (scans and activates LVM volumes)
   -o <offset>        Manual byte offset for partition mounting
-  -r <ro|rw>         Mount mode: ro (read-only, default) or rw (read-write)
   -s                 Status - Check mount status only
   -u                 Unmount - Unmount image and cleanup
   -h, --help         Show this help message
@@ -45,7 +44,7 @@ Supported Formats:
   Raw Images:        .raw, .dd, .img, .iso
 
 Examples:
-  # Mount a virtual disk (read-only)
+  # Mount a virtual disk
   er2.sh -i disk.vmdk
 
   # Mount a forensic image
@@ -66,31 +65,49 @@ Examples:
 
 ### Important Notes
 
+#### Read-Only Mounting
+
+**All images are mounted strictly read-only.** The script uses `qemu-nbd -r` for all image types, which guarantees that the underlying image file is never modified. This ensures:
+
+- **Forensic integrity** is always preserved
+
+- **Cryptographic hashes** (MD5/SHA-1/SHA-256) remain unchanged
+
+- **Chain of custody** is maintained for legal proceedings
+
 #### LVM Support
 
-**By default, all images are mounted read-only for safety.** This protects the vast majority of images (non-LVM) from accidental modification.
-
-If your image contains LVM volumes, you must use the `-l` flag:
+If your image contains LVM volumes, use the `-l` flag to scan and activate them:
 
 ```shell
 sudo er2.sh -i disk.dd -m /mnt/disk -l
 ```
 
-**Why?** LVM activation requires writing metadata to the disk image, which will:
-- Modify the image file
-- Change its cryptographic hash (MD5/SHA-1/SHA-256)
-- Affect chain of custody for forensic evidence
+**How it works:**
 
-The script will detect LVM volumes and guide you if you forget the `-l` flag.
+- The script creates a temporary LVM filter to prevent auto-activation of host LVM volumes
+
+- Volume groups on the NBD device are scanned with `vgscan`
+
+- LVM volumes are activated with `vgchange -ay`
+
+- Since the NBD device is read-only (`qemu-nbd -r`), LVM reads metadata without writing to the image
+
+- On cleanup, all LVM volumes are properly deactivated before detaching the NBD device
+
+The script will detect LVM volumes and prompt you if you forget the `-l` flag.
 
 #### Forensic Mounting
 
-The script uses forensically sound mount options:
-- **ext2/ext3/ext4**: Mounted with `noload` to prevent journal replay
-- **NTFS**: Mounted with `norecover` to prevent log file replay
-- **E01/AFF**: Always read-only (FUSE limitation), LVM not supported
+The script uses forensically sound mount options for all supported filesystems:
 
-These options prevent the hash changes documented in [Maxim Suhanov's research](https://dfir.ru/2018/12/02/the-ro-option-is-not-a-solution/).
+| Filesystem | Mount Options | Purpose |
+| --- | --- | --- |
+| ext2/ext3/ext4 | `noload` | Prevents journal replay |
+| NTFS | `norecover` | Prevents log file replay |
+| E01/AFF | Read-only via FUSE + `qemu-nbd -r` | FUSE tools present raw image to NBD |
+
+These options, combined with `qemu-nbd -r`, prevent the hash changes documented in [Maxim Suhanov's research](https://dfir.ru/2020/05/24/how-mounting-a-disk-image-can-change-it/).
 
 ### Dependencies
 
@@ -129,7 +146,7 @@ OPTIONAL:
 ## Which Script Should I Use?
 
 | Scenario | Recommended Script |
-|:---------|:-------------------|
+| --- | --- |
 | Fast, flexible, no-frills mounting of modern formats, LVM, or complex images. | **`er2.sh`** |
 | New to the mounting process and want to learn or go through each step interactively. | `ermount.sh` |
 | Need to mount VSS (Volume Shadow Copies) or BitLocker-encrypted volumes. | `ermount.sh` |
@@ -139,3 +156,4 @@ OPTIONAL:
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
