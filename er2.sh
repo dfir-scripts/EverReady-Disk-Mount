@@ -422,17 +422,16 @@ mount_image() {
         echo ""
         SCRIPT_NAME=$(basename "$0")
         echo "$SCRIPT_NAME mounts multiple image types"
-        echo "Usage: $SCRIPT_NAME -i <image> [-m mount/point] [-f filesystem] [-l] [-o offset] [-r ro|rw] [-s] [-u]"
+        echo "Usage: $SCRIPT_NAME -i <image> [-m mount/point] [-f filesystem] [-l] [-o offset] [-s] [-u]"
         echo ""
         echo "Required:"
         echo "  -i <image>         Disk image file or ISO"
         echo ""
         echo "Optional:"
         echo "  -f <filesystem>    Filesystem type: ntfs, ext4, vfat, exfat, hfsplus"
-        echo "  -l                 Enable LVM support (allows image modification)"
+        echo "  -l                 Enable LVM support (scans and activates LVM volumes)"
         echo "  -s                 Status - Check mount status only"
         echo "  -u                 Unmount - Unmount image and cleanup"
-        echo "  -r <ro|rw>         Mount mode: ro (read-only) or rw (read-write)"
         echo ""
         echo "For full help: $SCRIPT_NAME -h"
         echo ""
@@ -450,12 +449,9 @@ mount_image() {
         print_error "Invalid filesystem '$filesystem'. Use 'ntfs', 'ext4', 'vfat', 'exfat', or 'hfsplus'."
         return 1
     fi
-    if [ -n "$mount_mode" ] && [[ "$mount_mode" != "ro" && "$mount_mode" != "rw" ]]; then
-        print_error "Invalid mount mode '$mount_mode'. Use 'ro' or 'rw'."
-        return 1
-    fi
-    [ -z "$filesystem" ] && filesystem="ntfs"
-    [ -z "$mount_mode" ] && mount_mode="ro"
+    
+    # Always mount read-only (qemu-nbd -r enforces this at block level)
+    local mount_mode="ro"
     
     # LVM mode confirmation screen
     if [ "$lvm_mode" = true ]; then
@@ -770,43 +766,25 @@ mount_image() {
             return 1
         fi
     fi
-    # Determine if we need -r flag for qemu-nbd
+    # Determine qemu-nbd options
     # NBD mounting strategy:
-    # - Forensic images (E01, AFF, Split RAW): Always read-only (-r flag)
-    # - Other images: Read-only by default (-r flag) for safety
-    # - LVM mode (-l flag): Writable (no -r flag) to allow LVM activation
+    # - ALL images: Always read-only (-r flag) for forensic integrity
+    # - LVM mode still works with read-only NBD (LVM metadata is read, not written)
     local qemu_nbd_opts=""
     local is_raw_image=false
     local is_virtual_disk=false
     
     if [ -n "$ewf_mount" ] || [ -n "$splitraw_mount" ] || [ -n "$aff_mount" ]; then
-        # Forensic images: always read-only (FUSE limitation)
+        # Forensic images
         qemu_nbd_opts="-r -f raw"
-        echo "Using read-only mode for forensic image..."
     elif [[ "$image_path_lower" =~ \.(dd|raw|img)$ ]]; then
         # Raw images
         is_raw_image=true
-        if [ "$lvm_mode" = true ]; then
-            # LVM mode: writable (user explicitly requested)
-            qemu_nbd_opts="-f raw"
-            echo "Detected raw disk image format (LVM mode enabled)..."
-        else
-            # Default: read-only for safety
-            qemu_nbd_opts="-r -f raw"
-            echo "Detected raw disk image format (read-only)..."
-        fi
+        qemu_nbd_opts="-r -f raw"
     else
         # Virtual disks (VMDK, VDI, QCOW2, etc.)
         is_virtual_disk=true
-        if [ "$lvm_mode" = true ]; then
-            # LVM mode: writable (user explicitly requested)
-            qemu_nbd_opts=""
-            echo "Detected virtual disk image format (LVM mode enabled)..."
-        else
-            # Default: read-only for safety
-            qemu_nbd_opts="-r"
-            echo "Detected virtual disk image format (read-only)..."
-        fi
+        qemu_nbd_opts="-r"
     fi
     
     # Check for flat VMDK files and adjust options
@@ -817,19 +795,12 @@ mount_image() {
         # Flat VMDK descriptors are typically small (< 10KB)
         if [ "$file_size" -lt 10240 ]; then
             if grep -q -i "createType.*=.*\".*flat\|createType.*=.*\".*vmfs" "$image_path" 2>/dev/null; then
-                echo "Detected flat VMDK descriptor file..."
                 # For flat VMDKs, we need to use the -flat.vmdk file with -f raw
                 local flat_file="${image_path%.vmdk}-flat.vmdk"
                 if [ -f "$flat_file" ]; then
-                    echo "Using flat VMDK data file: $flat_file"
                     image_path="$flat_file"
-                    # For flat VMDK, always use -f raw
-                    # Preserve -r flag only if it was already set (forensic images)
-                    if [[ " $qemu_nbd_opts " =~ " -r " ]]; then
-                        qemu_nbd_opts="-r -f raw"
-                    else
-                        qemu_nbd_opts="-f raw"
-                    fi
+                    # For flat VMDK, always use -r -f raw
+                    qemu_nbd_opts="-r -f raw"
                 else
                     print_error "Flat VMDK descriptor found but data file not found: $flat_file"
                     cleanup_and_exit "$nbd_device" "$temp_dir" "$ewf_mount" "$aff_mount" "$splitraw_mount" false
@@ -838,13 +809,8 @@ mount_image() {
             fi
         # If filename contains "-flat", it's already the data file
         elif [[ "$image_path_lower" =~ -flat\.vmdk$ ]]; then
-            echo "Detected flat VMDK data file..."
-            # Preserve -r flag if it was set
-            if [[ " $qemu_nbd_opts " =~ " -r " ]]; then
-                qemu_nbd_opts="-r -f raw"
-            else
-                qemu_nbd_opts="-f raw"
-            fi
+            # Flat VMDK data file
+            qemu_nbd_opts="-r -f raw"
         fi
     fi
     
@@ -901,8 +867,8 @@ mount_image() {
                 echo ""
                 echo "This image contains LVM volume groups: $vgs_found"
                 echo ""
-                echo "LVM activation requires write access and will modify the image."
-                echo "The image is currently mounted read-only for safety."
+                echo "To access LVM volumes, you need to use the -l flag."
+                echo "The image will remain read-only (protected by qemu-nbd -r)."
                 echo ""
                 echo "To mount this image with LVM support, use:"
                 echo "  sudo $(basename "$0") -i $image_path -m $mount_point -l"
@@ -921,56 +887,38 @@ mount_image() {
             
             # LVM mode enabled, proceed with warnings
             # Provide accurate container-specific warnings
-            if [ "$is_raw_image" = true ]; then
-                # Raw images - CAN be modified
+            echo ""
+            echo "ℹ️  INFO: Read-Only LVM Activation"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo ""
+            echo "The image is mounted read-only using qemu-nbd -r."
+            echo "LVM volumes will be scanned and activated for access."
+            echo ""
+            echo "FORENSIC INTEGRITY:"
+            echo "  • The original image file WILL NOT be modified"
+            echo "  • Cryptographic hash (MD5/SHA-1/SHA-256) will remain unchanged"
+            echo "  • Chain of custody is maintained"
+            echo ""
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo ""
+            read -r -p "Do you want to proceed with LVM activation? (yes/no): " lvm_proceed
+            
+            if [[ ! "$lvm_proceed" =~ ^[Yy]([Ee][Ss])?$ ]]; then
                 echo ""
-                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                echo "⚠️  WARNING: LVM Metadata Modification Required"
-                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                echo ""
-                echo "Activating LVM volume groups requires writing metadata to the disk image."
-                echo "This will ALTER the image file and change its cryptographic hash."
-                echo ""
-                echo "WHAT GETS MODIFIED:"
-                echo "  • LVM metadata (activation state, timestamps, counters)"
-                echo "  • This is unavoidable - required for LVM to function"
-                echo "  • Filesystem metadata will be protected (noload/norecover options)"
-                echo ""
-                echo "FORENSIC IMPACT:"
-                echo "  • The image file's hash (MD5/SHA-1/SHA-256) will change"
-                echo "  • Chain of custody may be affected"
-                echo "  • Original evidence integrity cannot be verified after activation"
-                echo ""
-                echo "AUTO-ACTIVATION PREVENTION:"
-                echo "  • Global LVM filter is active (prevents udev auto-activation)"
-                echo "  • LVM will ONLY activate if you confirm below"
-                echo "  • Without confirmation, LVM remains inactive and image unchanged"
-                echo ""
-                echo "RECOMMENDED PRACTICE:"
-                echo "  • Only proceed if this is a verified working copy"
-                echo "  • Never use this on original evidence"
-                echo "  • Document this action in your forensic notes"
-                echo ""
-                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                echo ""
-                read -r -p "Do you want to proceed with LVM activation? (yes/no): " lvm_proceed
-                
-                if [[ ! "$lvm_proceed" =~ ^[Yy]([Ee][Ss])?$ ]]; then
-                    echo ""
-                    print_error "LVM activation cancelled by user."
-                    echo "Cleaning up and exiting..."
-                    cleanup_lvm "$nbd_device" true
-                    qemu-nbd -d "$nbd_device" >/dev/null 2>&1
-                    [ -n "$temp_dir" ] && rm -rf "$temp_dir" 2>/dev/null
-                    [ -n "$ewf_mount" ] && { umount "$ewf_mount" 2>/dev/null; rm -rf "$ewf_mount" 2>/dev/null; }
-                    [ -n "$aff_mount" ] && { fusermount -u "$aff_mount" 2>/dev/null; rm -rf "$aff_mount" 2>/dev/null; }
-                    [ -n "$splitraw_mount" ] && { fusermount -u "$splitraw_mount" 2>/dev/null; rm -rf "$splitraw_mount" 2>/dev/null; }
-                    return 1
-                fi
-                echo ""
-                print_success "User confirmed. Proceeding with LVM activation..."
-                echo ""
+                print_error "LVM activation cancelled by user."
+                echo "Cleaning up and exiting..."
+                cleanup_lvm "$nbd_device" true
+                qemu-nbd -d "$nbd_device" >/dev/null 2>&1
+                [ -n "$temp_dir" ] && rm -rf "$temp_dir" 2>/dev/null
+                [ -n "$ewf_mount" ] && { umount "$ewf_mount" 2>/dev/null; rm -rf "$ewf_mount" 2>/dev/null; }
+                [ -n "$aff_mount" ] && { fusermount -u "$aff_mount" 2>/dev/null; rm -rf "$aff_mount" 2>/dev/null; }
+                [ -n "$splitraw_mount" ] && { fusermount -u "$splitraw_mount" 2>/dev/null; rm -rf "$splitraw_mount" 2>/dev/null; }
+                return 1
             fi
+            echo ""
+            print_success "User confirmed. Proceeding with LVM activation..."
+            echo ""
+
             
             # Now activate the volume groups
             for vg in $vgs_found; do
@@ -1404,7 +1352,7 @@ if [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
     echo ""
     echo "$SCRIPT_NAME - Mounts multiple disk image types"
     echo ""
-    echo "Usage: $SCRIPT_NAME -i <image> [-m mount/point] [-f filesystem] [-l] [-o offset] [-r ro|rw] [-s] [-u]"
+    echo "Usage: $SCRIPT_NAME -i <image> [-m mount/point] [-f filesystem] [-l] [-o offset] [-s] [-u]"
     echo ""
     echo "Required:"
     echo "  -i <image>         Disk image file or ISO"
@@ -1412,9 +1360,8 @@ if [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
     echo "Optional:"
     echo "  -m <mount/point>   Mount point directory (default: /mnt/image_mount)"
     echo "  -f <filesystem>    Filesystem type: ntfs, ext4, vfat, exfat, hfsplus"
-    echo "  -l                 Enable LVM support (allows image modification)"
+    echo "  -l                 Enable LVM support (scans and activates LVM volumes)"
     echo "  -o <offset>        Manual byte offset for partition mounting"
-    echo "  -r <ro|rw>         Mount mode: ro (read-only, default) or rw (read-write)"
     echo "  -s                 Status - Check mount status only"
     echo "  -u                 Unmount - Unmount image and cleanup"
     echo "  -h, --help         Show this help message"
@@ -1439,14 +1386,13 @@ check_status=false
 unmount=false
 lvm_mode=false
 manual_offset=""
-while getopts "i:m:f:lo:r:su" opt; do
+while getopts "i:m:f:lo:su" opt; do
     case $opt in
         i) image_path="$OPTARG" ;;
         m) mount_point="$OPTARG" ;;
         f) filesystem="$OPTARG" ;;
         l) lvm_mode=true ;;
         o) manual_offset="$OPTARG" ;;
-        r) mount_mode="$OPTARG" ;;
         s) check_status=true ;;
         u) unmount=true ;;
         \?) 
@@ -1454,7 +1400,7 @@ while getopts "i:m:f:lo:r:su" opt; do
             echo "Error: Invalid option"
             echo ""
             SCRIPT_NAME=$(basename "$0")
-            echo "Usage: $SCRIPT_NAME -i <image> [-m mount/point] [-f filesystem] [-l] [-o offset] [-r ro|rw] [-s] [-u]"
+            echo "Usage: $SCRIPT_NAME -i <image> [-m mount/point] [-f filesystem] [-l] [-o offset] [-s] [-u]"
             echo "For full help: $SCRIPT_NAME -h"
             echo ""
             exit 1 
@@ -1462,5 +1408,5 @@ while getopts "i:m:f:lo:r:su" opt; do
     esac
 done
 [ -z "$mount_point" ] && mount_point="/mnt/image_mount"
-mount_image "$image_path" "$mount_point" "$lvm_mode" "$filesystem" "$check_status" "$unmount" "$mount_mode" "$manual_offset"
+mount_image "$image_path" "$mount_point" "$lvm_mode" "$filesystem" "$check_status" "$unmount" "" "$manual_offset"
 exit $?
