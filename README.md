@@ -107,8 +107,6 @@ The script uses forensically sound mount options for all supported filesystems:
 | NTFS | `norecover` | Prevents log file replay |
 | E01/AFF | Read-only via FUSE + `qemu-nbd -r` | FUSE tools present raw image to NBD |
 
-These options, combined with `qemu-nbd -r`, prevent the hash changes documented in [Maxim Suhanov's research](https://dfir.ru/2020/05/24/how-mounting-a-disk-image-can-change-it/).
-
 ### Dependencies
 
 To use all features, you may need to install the following tools:
