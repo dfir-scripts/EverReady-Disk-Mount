@@ -181,20 +181,21 @@ function bit_locker_mount(){
 
 #Identify and choose whether to mount any vss volumes
 function mount_vss(){
+      [ "${offset}" != "" ] && offset="-o $partition_offset "
       [ 'which vshadowinfo' == "" ] && makered "libvshadow-utils not installed" && sleep 1 && exit
       vss_dir="/mnt/vss"
-      vss_info=$(vshadowinfo $image_src 2>/dev/null |grep "Number of stores:"|grep -v "0$")
-      vshadowinfo $image_src 2>/dev/null
+      vss_info=$(vshadowinfo $image_src $offset 2>/dev/null |grep "Number of stores:"|grep -v "0$")
+      vshadowinfo $image_src $offset 2>/dev/null
       [ "${vss_info}" != "" ] && echo "VSCs found! "$vss_info && \
       echo "Mount Volume Shadow Copies?" && yes-no && vsc="yes"
-      [ "${offset}" == "yes" ] && offset="-o $offset "
       [ "${vsc}" == "yes" ] && vshadowmount $image_src $offset$vss_dir && \
       ls $vss_dir | while read vsc;
       do
         mkdir -p /mnt/shadow/$vsc
         mount -t ntfs -o ro,loop,show_sys_files,streams_interface=windows /mnt/vss/$vsc /mnt/shadow/$vsc
       done  || exit
-      ls /mnt/shadow/ && makegreen "Success! VSCs mounted on /mnt/shadow" || echo "No Volume Shadow Copies mounted"
+      find /mnt/shadow -maxdepth 1 -mindepth 1 -type d && \
+      makegreen "Success! " || echo "No Volume Shadow Copies mounted"
 }
 
 ######### UNMOUNT IMAGES ###################
